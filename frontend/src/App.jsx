@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { fetchDashboardData, forceRefreshDashboard } from './api/newsApi';
-import SearchBar from './components/SearchBar';
+import KeywordAutocomplete from './components/KeywordAutocomplete';
 import RefreshTimer from './components/RefreshTimer';
 import PinnedSection from './components/PinnedSection';
 import ArticleGrid from './components/ArticleGrid';
@@ -160,7 +160,7 @@ export default function App() {
       </header>
 
       {/* Main Search Panel */}
-      <SearchBar onSearch={handleSearch} onClear={handleClear} isLoading={isLoading || isRefreshing} theme={theme} />
+      <KeywordAutocomplete onSearch={handleSearch} onClear={handleClear} isLoading={isLoading || isRefreshing} />
 
       {/* Refresh Scheduler Status */}
       {payload && (

@@ -9,6 +9,9 @@ from app.scheduler import start_scheduler, shutdown_scheduler
 from app.pipeline import run_pipeline
 from app.models import DashboardPayload, RefreshRequest
 
+from pool.article_pool_fetcher import ensure_fresh_pool_on_startup
+from pool.keyword_extractor import load_keywords_cache, get_cached_keywords
+
 # Setup logging config
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +26,21 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database and tables...")
     init_db()
     
+    logger.info("Ensuring fresh article pool on startup...")
+    topics = [
+        "Dalmia Cement",
+        "AI",
+        "machine learning",
+        "robotics & automation",
+        "manufacturing",
+        "cement industry"
+    ]
+    try:
+        await ensure_fresh_pool_on_startup(topics)
+        load_keywords_cache()
+    except Exception as e:
+        logger.error(f"Failed to ensure fresh pool on startup: {str(e)}")
+    
     logger.info("Starting background scheduler...")
     start_scheduler()
     
@@ -30,6 +48,7 @@ async def lifespan(app: FastAPI):
     
     logger.info("Shutting down background scheduler...")
     shutdown_scheduler()
+
 
 app = FastAPI(
     title="AI-Powered Industry News Dashboard PoC Backend",
@@ -52,6 +71,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/api/keywords/suggest")
+async def suggest_keywords(q: str = Query("", description="Prefix search term for autocomplete suggestions")):
+    q_clean = q.lower().strip()
+    if len(q_clean) < 2:
+        return {"suggestions": []}
+        
+    cached_list = get_cached_keywords()
+    
+    # 1. Prefix match
+    prefix_matches = [kw for kw in cached_list if kw.startswith(q_clean)]
+    
+    # 2. Substring match fallback (if prefix matches are less than 5)
+    if len(prefix_matches) < 5:
+        seen = set(prefix_matches)
+        substring_matches = [kw for kw in cached_list if q_clean in kw and kw not in seen]
+        matches = prefix_matches + substring_matches
+    else:
+        matches = prefix_matches
+        
+    return {"suggestions": matches[:10]}
 
 @app.get("/api/news", response_model=DashboardPayload)
 async def get_news(keyword: str = Query(None, description="Search keyword or topic")):
