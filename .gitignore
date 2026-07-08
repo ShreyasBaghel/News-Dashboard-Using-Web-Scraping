@@ -1,0 +1,25 @@
+# Environment variables
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Database
+*.db
+
+# Cache
+cache.json
+seen_articles.json
+
+# Node
+node_modules/
+
+# Logs
+*.log
+
+# VS Code
+.vscode/

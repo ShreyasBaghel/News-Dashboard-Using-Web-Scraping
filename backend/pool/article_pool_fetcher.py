@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from app.services.news_fetcher import fetch_news_for_phrases
 from app.services.cache import is_url_seen
 from app.services.diversity import getNormalizedDomain
+from app.services.language_detector import is_english
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,11 @@ async def fetch_article_pool(topics: list[str], target_total: int = 150) -> list
                 # Apply 7-day de-duplication cache
                 if is_url_seen(url):
                     logger.debug(f"Filtering out article in 7-day cache: {art.get('title')}")
+                    continue
+                    
+                # Filter out non-English articles
+                if not is_english(art.get("title", ""), art.get("description", "") or ""):
+                    logger.info(f"Skipping article from fetch_article_pool '{art.get('title')}' because it is detected as non-English.")
                     continue
                     
                 # Build pooled article record

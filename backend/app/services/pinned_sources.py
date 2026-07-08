@@ -3,13 +3,14 @@ import asyncio
 from typing import List, Dict, Any
 from app.config import settings
 from app.services.news_fetcher import fetch_from_newsapi, fetch_from_gnews, fetch_from_mediastack
+from app.services.language_detector import is_english
 
 logger = logging.getLogger(__name__)
 
 async def fetch_pinned_articles() -> List[Dict[str, Any]]:
     """
-    Fetch up to 5 technology articles representing NVIDIA, Microsoft, and OpenAI.
-    Ensures representation of all three companies.
+    Fetch all available technology articles representing NVIDIA, Microsoft, and OpenAI.
+    Returns all candidates so that the pipeline can validate and filter them.
     Falls back to mock tech articles if APIs are not configured.
     """
     has_keys = any([settings.news_api_key_resolved, settings.gnews_key_resolved, settings.mediastack_key_resolved])
@@ -42,31 +43,22 @@ async def fetch_pinned_articles() -> List[Dict[str, Any]]:
             if isinstance(result, Exception) or not result:
                 continue
             for art in result:
+                # Check language of pinned article candidates
+                if not is_english(art.get("title", ""), art.get("description", "") or ""):
+                    logger.info(f"Skipping pinned article '{art.get('title')}' because it is detected as non-English.")
+                    continue
                 art["company"] = company
                 art["is_pinned"] = True
                 company_articles.append(art)
                 
-        # Take the top 2 articles for this company to merge later
-        all_pinned.extend(company_articles[:2])
+        # Take all articles for this company to validate later
+        all_pinned.extend(company_articles)
         
     # If API requests returned nothing, load mock pinned
     if not all_pinned:
         return _generate_mock_pinned()
         
-    # Deduplicate and limit to exactly 5 articles, ensuring round-robin representation
-    final_pinned = []
-    seen_urls = set()
-    
-    # Round robin selection to ensure representation of each company if possible
-    for idx in range(3):  # up to 3 articles per company
-        for company in companies:
-            matching = [a for a in all_pinned if a.get("company") == company and a["url"] not in seen_urls]
-            if matching and len(final_pinned) < 5:
-                art = matching[0]
-                seen_urls.add(art["url"])
-                final_pinned.append(art)
-                
-    return final_pinned
+    return all_pinned
 
 def _generate_mock_pinned() -> List[Dict[str, Any]]:
     """Return high-quality mock technology articles for NVIDIA, Microsoft, and OpenAI."""

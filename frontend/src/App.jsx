@@ -5,7 +5,8 @@ import RefreshTimer from './components/RefreshTimer';
 import PinnedSection from './components/PinnedSection';
 import ArticleGrid from './components/ArticleGrid';
 import ArticleCard from './components/ArticleCard';
-import { Newspaper, AlertCircle, Building2, Terminal, Sun, Moon } from 'lucide-react';
+import DalmiaLogo from './components/DalmiaLogo';
+import { Newspaper, AlertCircle, Building2, Terminal, Sun, Moon, Search, Zap } from 'lucide-react';
 
 const LoadingSkeleton = () => (
   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.5rem', width: '100%' }}>
@@ -24,8 +25,14 @@ const LoadingSkeleton = () => (
 );
 
 export default function App() {
-  const [keyword, setKeyword] = useState('');
-  const [payload, setPayload] = useState(null);
+  const [normalFeed, setNormalFeed] = useState([]);
+  const [searchResults, setSearchResults] = useState([]);
+  const [pinnedArticles, setPinnedArticles] = useState([]);
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [activeView, setActiveView] = useState('feed'); // 'feed', 'search', 'pinned'
+  const [lastUpdated, setLastUpdated] = useState('');
+  const [nextUpdate, setNextUpdate] = useState('');
+
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -43,12 +50,15 @@ export default function App() {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
   };
 
-  const loadFeed = async (searchWord = '') => {
+  const loadInitialData = async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await fetchDashboardData(searchWord);
-      setPayload(data);
+      const data = await fetchDashboardData('');
+      setNormalFeed(data.articles || []);
+      setPinnedArticles(data.pinned_articles || []);
+      setLastUpdated(data.last_updated || '');
+      setNextUpdate(data.next_update || '');
     } catch (err) {
       setError(err.message || 'Failed to load news dashboard payload.');
     } finally {
@@ -60,8 +70,17 @@ export default function App() {
     setIsRefreshing(true);
     setError(null);
     try {
-      const data = await forceRefreshDashboard(keyword);
-      setPayload(data);
+      const data = await forceRefreshDashboard(searchKeyword);
+      if (searchKeyword) {
+        setSearchResults(data.articles || []);
+      } else {
+        setNormalFeed(data.articles || []);
+      }
+      if (data.pinned_articles) {
+        setPinnedArticles(data.pinned_articles);
+      }
+      setLastUpdated(data.last_updated || '');
+      setNextUpdate(data.next_update || '');
     } catch (err) {
       setError(err.message || 'Refresh request failed.');
     } finally {
@@ -70,17 +89,33 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadFeed();
+    loadInitialData();
   }, []);
 
-  const handleSearch = (term) => {
-    setKeyword(term);
-    loadFeed(term);
+  const handleSearch = async (term) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await fetchDashboardData(term);
+      setSearchResults(data.articles || []);
+      setSearchKeyword(term);
+      if (data.pinned_articles && data.pinned_articles.length > 0) {
+        setPinnedArticles(data.pinned_articles);
+      }
+      if (data.last_updated) setLastUpdated(data.last_updated);
+      if (data.next_update) setNextUpdate(data.next_update);
+      setActiveView('search');
+    } catch (err) {
+      setError(err.message || 'Search failed.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleClear = () => {
-    setKeyword('');
-    loadFeed('');
+    setSearchKeyword('');
+    setSearchResults([]);
+    setActiveView('feed');
   };
 
   return (
@@ -103,16 +138,16 @@ export default function App() {
           <div 
             style={{
               background: '#ffffff',
-              padding: '0.6rem',
+              padding: '0.4rem 0.8rem',
               borderRadius: 'var(--radius-md)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 4px 15px rgba(0, 0, 0, 0.15)'
             }}
           >
-            <Building2 size={24} style={{ color: '#1a3a5c' }} />
+            <DalmiaLogo height="32px" />
           </div>
+
           <div>
             <h1 style={{ fontSize: '1.45rem', lineHeight: 1.1, fontFamily: 'var(--font-title)', color: '#ffffff' }}>
               Dalmia Cement <span style={{ color: '#e2a02b' }}>News Intel Hub</span>
@@ -162,10 +197,37 @@ export default function App() {
       {/* Main Search Panel */}
       <KeywordAutocomplete onSearch={handleSearch} onClear={handleClear} isLoading={isLoading || isRefreshing} />
 
+      {/* Navigation Tabs */}
+      <div className="nav-tabs-container glass-panel animate-fade-in">
+        {[
+          { id: 'feed', label: 'Home Feed', icon: Newspaper, count: normalFeed.length },
+          { id: 'search', label: 'Search Results', icon: Search, count: searchKeyword ? searchResults.length : null },
+          { id: 'pinned', label: 'Pinned Intel', icon: Zap, count: pinnedArticles.length }
+        ].map((tab) => {
+          const Icon = tab.icon;
+          const isActive = activeView === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveView(tab.id)}
+              className={`nav-tab-button ${isActive ? 'active' : ''}`}
+            >
+              <Icon size={18} style={{ color: isActive ? '#ffffff' : 'var(--color-primary)', flexShrink: 0 }} />
+              <span>{tab.label}</span>
+              {tab.count !== null && (
+                <span className="nav-tab-badge">
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Refresh Scheduler Status */}
-      {payload && (
+      {nextUpdate && (
         <RefreshTimer 
-          nextUpdate={payload.next_update} 
+          nextUpdate={nextUpdate} 
           onManualRefresh={handleForceRefresh} 
           isLoading={isRefreshing} 
         />
@@ -203,7 +265,7 @@ export default function App() {
         );
       })()}
 
-      {/* Loading Skeleton */}
+      {/* Loading Skeleton / Main View Content */}
       {isLoading ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -212,30 +274,80 @@ export default function App() {
           </div>
         </div>
       ) : (
-        payload && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
-            
-            {/* Pinned Section */}
-            {payload.pinned_articles && payload.pinned_articles.length > 0 && (
-              <PinnedSection articles={payload.pinned_articles} />
-            )}
-
-            {/* General Section */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+          
+          {/* Feed View */}
+          {activeView === 'feed' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
                 <Newspaper size={18} style={{ color: 'var(--color-primary)' }} />
                 <h2 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-title)' }}>
-                  {keyword ? `Topic Intelligence: "${payload.keyword}"` : 'General Manufacturing & Industry Feed'}
+                  General Manufacturing & Industry Feed
                 </h2>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                  Showing {payload.articles ? payload.articles.length : 0} summarized articles
+                  Showing {normalFeed.length} summarized articles
                 </span>
               </div>
 
-              {payload.articles && payload.articles.length > 0 ? (
+              {normalFeed.length > 0 ? (
                 <ArticleGrid>
-                  {payload.articles.map((article, idx) => (
+                  {normalFeed.map((article, idx) => (
                     <ArticleCard key={`general-${idx}`} article={article} />
+                  ))}
+                </ArticleGrid>
+              ) : (
+                <div 
+                  className="glass-panel"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '4rem 2rem',
+                    textAlign: 'center',
+                    color: 'var(--text-secondary)',
+                    gap: '0.75rem'
+                  }}
+                >
+                  <Newspaper size={48} style={{ color: 'var(--text-muted)' }} />
+                  <h3 style={{ fontSize: '1.15rem', color: 'var(--text-primary)' }}>No articles found</h3>
+                  <p style={{ fontSize: '0.9rem', maxWidth: '400px' }}>
+                    The industry feed is currently empty.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Search View */}
+          {activeView === 'search' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
+                <Search size={18} style={{ color: 'var(--color-primary)' }} />
+                <h2 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-title)' }}>
+                  {searchKeyword ? `Topic Intelligence: "${searchKeyword}"` : 'Search Results'}
+                </h2>
+                {searchKeyword && (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                    Showing {searchResults.length} summarized articles
+                  </span>
+                )}
+              </div>
+
+              {!searchKeyword ? (
+                <div className="glass-panel welcome-panel animate-fade-in">
+                  <Search size={48} style={{ color: 'var(--text-muted)' }} />
+                  <h3 style={{ fontSize: '1.25rem', color: 'var(--text-primary)', fontFamily: 'var(--font-title)' }}>
+                    AI Search Desk
+                  </h3>
+                  <p style={{ fontSize: '0.95rem', maxWidth: '450px', lineHeight: 1.6 }}>
+                    Enter industry, technology, or competitor keywords in the search bar above to fetch targeted real-time intelligence reports.
+                  </p>
+                </div>
+              ) : searchResults.length > 0 ? (
+                <ArticleGrid>
+                  {searchResults.map((article, idx) => (
+                    <ArticleCard key={`search-${idx}`} article={article} />
                   ))}
                 </ArticleGrid>
               ) : (
@@ -260,9 +372,38 @@ export default function App() {
                 </div>
               )}
             </div>
+          )}
 
-          </div>
-        )
+          {/* Pinned View */}
+          {activeView === 'pinned' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              {pinnedArticles.length > 0 ? (
+                <PinnedSection articles={pinnedArticles} />
+              ) : (
+                <div 
+                  className="glass-panel"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '4rem 2rem',
+                    textAlign: 'center',
+                    color: 'var(--text-secondary)',
+                    gap: '0.75rem'
+                  }}
+                >
+                  <Zap size={48} style={{ color: 'var(--text-muted)' }} />
+                  <h3 style={{ fontSize: '1.15rem', color: 'var(--text-primary)' }}>No pinned articles</h3>
+                  <p style={{ fontSize: '0.9rem', maxWidth: '400px' }}>
+                    There are no high-impact company articles pinned at the moment.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+        </div>
       )}
     </div>
   );
