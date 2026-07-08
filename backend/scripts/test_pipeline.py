@@ -7,6 +7,10 @@ import logging
 # Ensure project root is in the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Reconfigure stdout to support UTF-8 printing in Windows terminals
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from app.services.cache import init_db
 from app.pipeline import run_pipeline
 

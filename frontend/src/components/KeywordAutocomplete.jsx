@@ -10,9 +10,8 @@ const POPULAR_SUGGESTIONS = [
   { label: 'manufacturing', icon: Factory }
 ];
 
-export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
+export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chips = [], setChips }) {
   const [inputValue, setInputValue] = useState('');
-  const [chips, setChips] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef(null);
@@ -20,12 +19,7 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
 
   // Debounced suggestion fetching
   useEffect(() => {
-    if (inputValue.trim().length < 2) {
-      setSuggestions([]);
-      return;
-    }
-
-    const delayDebounce = setTimeout(async () => {
+    const fetchSuggestions = async () => {
       try {
         const query = encodeURIComponent(inputValue.trim().toLowerCase());
         const response = await fetch(`http://localhost:8000/api/keywords/suggest?q=${query}`);
@@ -38,7 +32,9 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
       } catch (err) {
         console.error('Error fetching suggestions:', err);
       }
-    }, 250);
+    };
+
+    const delayDebounce = setTimeout(fetchSuggestions, 250);
 
     return () => clearTimeout(delayDebounce);
   }, [inputValue, chips]);
@@ -95,9 +91,12 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
     <div className="search-bar-wrapper animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', position: 'relative' }}>
       
       {/* Search Input Box */}
-      <form onSubmit={handleSubmit} style={{ position: 'relative', width: '100%' }}>
+      <form onSubmit={handleSubmit} style={{ width: '100%' }}>
         <div 
           className="glass-panel" 
+          onClick={() => {
+            if (inputRef.current) inputRef.current.focus();
+          }}
           style={{
             display: 'flex',
             flexWrap: 'wrap',
@@ -108,7 +107,9 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
             boxShadow: 'var(--shadow-panel)',
             transition: 'var(--transition-smooth)',
             background: 'var(--bg-surface)',
-            gap: '0.5rem'
+            gap: '0.5rem',
+            position: 'relative',
+            cursor: 'text'
           }}
           onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--border-hover)'}
           onMouseLeave={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
@@ -137,7 +138,10 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
               {chip}
               <button
                 type="button"
-                onClick={() => handleRemoveChip(chip)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRemoveChip(chip);
+                }}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -166,6 +170,14 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
               setShowDropdown(true);
             }}
             onFocus={() => setShowDropdown(true)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (suggestions.length > 0) {
+                  handleSelectKeyword(suggestions[0]);
+                }
+              }
+            }}
             placeholder={chips.length === 0 ? "Type to search keywords (e.g. cement, robotics, ai...)" : "Add more keywords..."}
             disabled={isLoading}
             style={{
@@ -185,7 +197,10 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
           {(chips.length > 0 || inputValue) && (
             <button
               type="button"
-              onClick={handleClearAll}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleClearAll();
+              }}
               disabled={isLoading}
               style={{
                 background: 'none',
@@ -210,6 +225,7 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
           <button
             type="submit"
             disabled={isLoading || chips.length === 0}
+            onClick={(e) => e.stopPropagation()}
             style={{
               background: 'var(--gradient-tech)',
               border: 'none',
@@ -230,59 +246,78 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading }) {
           >
             Search
           </button>
-        </div>
 
-        {/* Floating Dropdown for Autocomplete suggestions */}
-        {showDropdown && suggestions.length > 0 && (
-          <div 
-            ref={dropdownRef}
-            className="glass-panel"
-            style={{
-              position: 'absolute',
-              top: '100%',
-              left: '1.5rem',
-              right: '1.5rem',
-              marginTop: '0.5rem',
-              borderRadius: 'var(--radius-md)',
-              border: '1px solid var(--border-color)',
-              background: 'var(--bg-surface)',
-              boxShadow: '0 10px 25px rgba(0,0,0,0.15)',
-              zIndex: 100,
-              maxHeight: '250px',
-              overflowY: 'auto',
-              padding: '0.5rem 0'
-            }}
-          >
-            {suggestions.map((item, idx) => (
-              <div 
-                key={idx}
-                onClick={() => handleSelectKeyword(item)}
-                style={{
-                  padding: '0.6rem 1.25rem',
-                  cursor: 'pointer',
-                  fontSize: '0.95rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  color: 'var(--text-primary)',
-                  transition: 'background 0.2s ease',
-                  fontFamily: 'var(--font-body)'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'var(--bg-surface-hover)';
-                  e.currentTarget.style.color = 'var(--color-primary)';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'transparent';
-                  e.currentTarget.style.color = 'var(--text-primary)';
-                }}
-              >
-                <Search size={14} style={{ color: 'var(--text-muted)' }} />
-                <span>{item}</span>
-              </div>
-            ))}
-          </div>
-        )}
+          {/* Floating Dropdown for Autocomplete suggestions */}
+          {showDropdown && (inputValue.trim() !== "" || suggestions.length > 0) && (
+            <div 
+              ref={dropdownRef}
+              className="glass-panel"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                right: 0,
+                marginTop: '0.5rem',
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--border-color)',
+                background: 'var(--bg-surface)',
+                boxShadow: '0 10px 25px rgba(0,0,0,0.15)',
+                zIndex: 9999,
+                maxHeight: '250px',
+                overflowY: 'auto',
+                padding: '0.5rem 0'
+              }}
+            >
+              {suggestions.length > 0 ? (
+                suggestions.map((item, idx) => (
+                  <div 
+                    key={idx}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSelectKeyword(item);
+                    }}
+                    style={{
+                      padding: '0.6rem 1.25rem',
+                      cursor: 'pointer',
+                      fontSize: '0.95rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      color: 'var(--text-primary)',
+                      transition: 'background 0.2s ease',
+                      fontFamily: 'var(--font-body)'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'var(--bg-surface-hover)';
+                      e.currentTarget.style.color = 'var(--color-primary)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent';
+                      e.currentTarget.style.color = 'var(--text-primary)';
+                    }}
+                  >
+                    <Search size={14} style={{ color: 'var(--text-muted)' }} />
+                    <span>{item}</span>
+                  </div>
+                ))
+              ) : (
+                <div 
+                  style={{
+                    padding: '1rem 1.25rem',
+                    fontSize: '0.9rem',
+                    color: 'var(--text-muted)',
+                    textAlign: 'center',
+                    fontStyle: 'italic',
+                    fontFamily: 'var(--font-body)'
+                  }}
+                >
+                  No matching keywords found
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </form>
       
       {/* Suggestions tags */}

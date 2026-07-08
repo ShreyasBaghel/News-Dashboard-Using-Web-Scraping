@@ -279,3 +279,66 @@ h1, h2, h3, h4 {
   width: 100%;
 }
 
+/* Sidebar Responsive & Stacking CSS */
+.sidebar-container {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-container.collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  border-color: transparent !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  overflow: hidden;
+}
+
+/* Backdrop defaults to hidden on desktop to avoid blurring the site */
+.mobile-sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 1023px) {
+  /* Mobile backdrop visible when sidebar is open */
+  .mobile-sidebar-backdrop {
+    display: block;
+  }
+
+  /* Sidebar Drawer styling on mobile/tablet */
+  .sidebar-container {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    height: 100vh !important;
+    width: 280px !important;
+    min-width: 280px !important;
+    z-index: 1000 !important;
+    transform: translateX(-100%);
+    box-shadow: 10px 0 30px rgba(0, 0, 0, 0.15) !important;
+    border-radius: 0 !important;
+  }
+  
+  .sidebar-container.open {
+    transform: translateX(0) !important;
+  }
+  
+  .sidebar-container.collapsed {
+    transform: translateX(-100%) !important;
+    width: 280px !important;
+    min-width: 280px !important;
+    border-color: transparent !important;
+    padding: 0 !important;
+  }
+  
+  /* Hide desktop-only floating button on mobile */
+  .sidebar-container + button {
+    display: none !important;
+  }
+  
+  /* Toggle text label hidden on mobile, show only icon for a cleaner layout */
+  .sidebar-toggle-text {
+    display: none;
+  }
+}
+

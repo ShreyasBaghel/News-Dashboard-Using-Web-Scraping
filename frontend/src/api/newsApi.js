@@ -66,3 +66,66 @@ export async function forceRefreshDashboard(keyword = '') {
     throw err;
   }
 }
+
+/**
+ * Pin an article to the pinned-articles store
+ * @param {object} article The article object to pin
+ * @param {string} [keyword] The currently active search keyword
+ * @returns {Promise<object>} Updated dashboard payload
+ */
+export async function pinArticle(article, keyword = '') {
+  try {
+    const response = await fetch(`${API_BASE_URL}/news/pin`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({ article, keyword: keyword || null }),
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Failed to pin article (Status ${response.status})`);
+    }
+    
+    return await response.json();
+  } catch (err) {
+    if (err.name === 'TypeError' || err.message === 'Failed to fetch' || err.message.includes('fetch')) {
+      throw new Error("ConnectionError: Could not reach the backend — is the server running?");
+    }
+    throw err;
+  }
+}
+
+/**
+ * Unpin an article from the pinned-articles store
+ * @param {string} url The URL of the article to unpin
+ * @param {string} [keyword] The currently active search keyword
+ * @returns {Promise<object>} Updated dashboard payload
+ */
+export async function unpinArticle(url, keyword = '') {
+  try {
+    const response = await fetch(`${API_BASE_URL}/news/unpin`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({ url, keyword: keyword || null }),
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Failed to unpin article (Status ${response.status})`);
+    }
+    
+    return await response.json();
+  } catch (err) {
+    if (err.name === 'TypeError' || err.message === 'Failed to fetch' || err.message.includes('fetch')) {
+      throw new Error("ConnectionError: Could not reach the backend — is the server running?");
+    }
+    throw err;
+  }
+}
+

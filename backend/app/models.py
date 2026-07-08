@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 class Article(BaseModel):
     title: str
@@ -11,6 +11,8 @@ class Article(BaseModel):
     keyword: Optional[str] = None
     is_pinned: bool = False
     company: Optional[str] = None  # NVIDIA, Microsoft, OpenAI for pinned articles
+    relevance_score: Optional[float] = 0.0
+    canonical_url: Optional[str] = None
 
 class DashboardPayload(BaseModel):
     keyword: str
@@ -18,6 +20,7 @@ class DashboardPayload(BaseModel):
     pinned_articles: List[Article]
     last_updated: str
     next_update: str
+    keyword_counts: Optional[Dict[str, int]] = None
 
 class RefreshRequest(BaseModel):
     keyword: Optional[str] = None

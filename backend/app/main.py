@@ -1,16 +1,19 @@
 import logging
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from app.config import settings
-from app.services.cache import init_db
+from app.services.cache import init_db, is_duplicate_of_any
 from app.scheduler import start_scheduler, shutdown_scheduler
 from app.pipeline import run_pipeline
-from app.models import DashboardPayload, RefreshRequest
+from app.models import DashboardPayload, RefreshRequest, Article
 
 from pool.article_pool_fetcher import ensure_fresh_pool_on_startup
 from pool.keyword_extractor import load_keywords_cache, get_cached_keywords
+from app.services.pinned_store import load_pinned_articles, pin_article, unpin_article
 
 # Setup logging config
 logging.basicConfig(
@@ -19,6 +22,88 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+class PinRequest(BaseModel):
+    article: Article
+    keyword: Optional[str] = None
+
+class UnpinRequest(BaseModel):
+    url: str
+    keyword: Optional[str] = None
+
+def overlay_pinned_articles(payload: dict) -> dict:
+    """
+    Dynamically integrates the pinned-articles JSON store with the pipeline results:
+    1. Read all currently pinned articles from JSON.
+    2. Set is_pinned = True on these articles.
+    3. For any other article in the payload's 'articles' or 'pinned_articles',
+       if its URL is not in the JSON store, set is_pinned = False.
+    4. Remove any articles from 'articles' if they are now in the JSON store (since they are pinned).
+    5. Deduplicate and return:
+       - 'pinned_articles': all articles currently in the JSON store.
+       - 'articles': all other articles in the payload, preserving their relative order.
+    """
+    pinned = load_pinned_articles()
+    incoming_articles = payload.get("articles", [])
+    incoming_pinned = payload.get("pinned_articles", [])
+    
+    # Initialize the store if it has never been populated and there are default pinned articles
+    if not pinned and incoming_pinned:
+        from app.services.pinned_store import save_pinned_articles
+        initialized_pinned = []
+        for a in incoming_pinned:
+            art_dict = a if isinstance(a, dict) else a.dict()
+            art_dict["is_pinned"] = True
+            initialized_pinned.append(art_dict)
+        save_pinned_articles(initialized_pinned)
+        pinned = initialized_pinned
+
+    pinned_urls = {a["url"] for a in pinned if a.get("url")}
+    
+    # Group them by URL to look up details
+    url_to_article = {}
+    for a in incoming_articles + incoming_pinned:
+        url = a.get("url") if isinstance(a, dict) else getattr(a, "url", None)
+        if url:
+            art_dict = a if isinstance(a, dict) else a.dict()
+            url_to_article[url] = art_dict
+            
+    final_pinned = []
+    for p in pinned:
+        url = p.get("url")
+        if url:
+            art_dict = dict(p)
+            art_dict["is_pinned"] = True
+            if url in url_to_article:
+                for k, v in url_to_article[url].items():
+                    if k != "is_pinned":
+                        art_dict[k] = v
+            final_pinned.append(art_dict)
+            
+    final_unpinned = []
+    seen_unpinned = []
+    for a in incoming_articles + incoming_pinned:
+        art_dict = a if isinstance(a, dict) else a.dict()
+        url = art_dict.get("url")
+        if not url:
+            continue
+            
+        # Check if it is a duplicate of any pinned article
+        if is_duplicate_of_any(art_dict, final_pinned):
+            continue
+            
+        # Check if it is a duplicate of any already added unpinned article
+        if is_duplicate_of_any(art_dict, seen_unpinned):
+            continue
+            
+        art_dict["is_pinned"] = False
+        final_unpinned.append(art_dict)
+        seen_unpinned.append(art_dict)
+            
+    new_payload = dict(payload)
+    new_payload["articles"] = final_unpinned
+    new_payload["pinned_articles"] = final_pinned
+    return new_payload
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -74,12 +159,12 @@ app.add_middleware(
 
 @app.get("/api/keywords/suggest")
 async def suggest_keywords(q: str = Query("", description="Prefix search term for autocomplete suggestions")):
-    q_clean = q.lower().strip()
-    if len(q_clean) < 2:
-        return {"suggestions": []}
-        
     cached_list = get_cached_keywords()
+    q_clean = q.lower().strip()
     
+    if not q_clean:
+        return {"suggestions": cached_list}
+        
     # 1. Prefix match
     prefix_matches = [kw for kw in cached_list if kw.startswith(q_clean)]
     
@@ -101,7 +186,7 @@ async def get_news(keyword: str = Query(None, description="Search keyword or top
     """
     try:
         payload = await run_pipeline(keyword=keyword, force_refresh=False)
-        return payload
+        return overlay_pinned_articles(payload)
     except Exception as e:
         logger.error(f"Error in GET /api/news: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
@@ -113,10 +198,36 @@ async def refresh_news(request: RefreshRequest):
     """
     try:
         payload = await run_pipeline(keyword=request.keyword, force_refresh=True)
-        return payload
+        return overlay_pinned_articles(payload)
     except Exception as e:
         logger.error(f"Error in POST /api/news/refresh: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Pipeline refresh error: {str(e)}")
+
+@app.post("/api/news/pin", response_model=DashboardPayload)
+async def pin_article_endpoint(request: PinRequest):
+    """
+    Pin an article to the pinned-articles store and update cache state.
+    """
+    try:
+        pin_article(request.article.dict())
+        payload = await run_pipeline(keyword=request.keyword, force_refresh=False)
+        return overlay_pinned_articles(payload)
+    except Exception as e:
+        logger.error(f"Error in POST /api/news/pin: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Pin error: {str(e)}")
+
+@app.post("/api/news/unpin", response_model=DashboardPayload)
+async def unpin_article_endpoint(request: UnpinRequest):
+    """
+    Unpin an article from the pinned-articles store and update cache state.
+    """
+    try:
+        unpin_article(request.url)
+        payload = await run_pipeline(keyword=request.keyword, force_refresh=False)
+        return overlay_pinned_articles(payload)
+    except Exception as e:
+        logger.error(f"Error in POST /api/news/unpin: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unpin error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -3,15 +3,26 @@ import logging
 from bs4 import BeautifulSoup
 import asyncio
 import re
-from app.services.validator import is_valid_url, is_valid_source_type, validate_content_quality
+from typing import Optional
+from app.services.cache import TTLLRUCache
+from app.services.validator import is_valid_url
 
 logger = logging.getLogger(__name__)
 
-async def scrape_article(url: str, title: str = "") -> str:
+# Bounded in-memory cache for scraped articles (max size 500, TTL 30 minutes)
+_scrape_cache = TTLLRUCache(maxsize=500, ttl_seconds=1800)
+
+_canonical_urls_cache = {}
+
+def get_canonical_url(url: str) -> Optional[str]:
+    return _canonical_urls_cache.get(url)
+
+async def scrape_article(url: str, title: str = "", client: Optional[httpx.AsyncClient] = None) -> str:
     """
     Scrapes the text paragraphs of an article from a URL.
     Returns a truncated version of the body text (first 2-3 paragraphs, capped at 250 words) for LLM consumption.
-    Raises ValueError on scraping or validation failures to allow the pipeline to retry.
+    Raises ValueError on scraping failures to allow the pipeline to retry.
+    Uses the in-memory scrape cache and accepts an optional shared AsyncClient.
     """
     # 1. Check for mock URLs
     if "-mock.com" in url:
@@ -25,7 +36,12 @@ async def scrape_article(url: str, title: str = "") -> str:
             f"and enhance manufacturing performance over the next decade."
         )
 
-    # 2. Pre-scrape URL check
+    # 2. Check Cache
+    cached_content = _scrape_cache.get(url)
+    if cached_content is not None:
+        return cached_content
+
+    # 3. Pre-scrape URL check
     url_ok, reason = is_valid_url(url)
     if not url_ok:
         logger.warning(f"Skipping scrape for {url}: {reason}")
@@ -44,60 +60,62 @@ async def scrape_article(url: str, title: str = "") -> str:
         # Be polite: Wait 3.0s before requesting to avoid hitting rate limits
         await asyncio.sleep(3.0)
         
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+        # Use shared client or create a short-lived one
+        if client is not None:
             response = await client.get(url, headers=headers)
+        else:
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as local_client:
+                response = await local_client.get(url, headers=headers)
             
-            if response.status_code != 200:
-                logger.warning(f"Could not scrape {url}: Status {response.status_code}")
-                raise ValueError(f"HTTP Status {response.status_code}")
-                
-            html_content = response.text
+        if response.status_code != 200:
+            logger.warning(f"Could not scrape {url}: Status {response.status_code}")
+            raise ValueError(f"HTTP Status {response.status_code}")
             
-            # Stage 1: Standard Extraction Method
-            full_text, paragraphs_count = _extract_with_standard_p_tags(html_content)
+        html_content = response.text
+        
+        # Parse BeautifulSoup once and decompose script/style/nav/footer/header/aside/form/button
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        # Extract and cache canonical URL if present
+        canonical_tag = soup.find("link", rel="canonical")
+        if canonical_tag and canonical_tag.get("href"):
+            _canonical_urls_cache[url] = canonical_tag.get("href").strip()
             
-            # Stage 2: Alternative Extraction Method 1 (Targeted Containers)
-            if not full_text or len(full_text.split()) < 60 or paragraphs_count < 2:
-                logger.info(f"Standard extraction yielded insufficient content for {url}. Retrying with targeted containers...")
-                full_text, paragraphs_count = _extract_with_containers(html_content)
-                
-            # Stage 3: Alternative Extraction Method 2 (Aggressive HTML Cleaning & Density checking)
-            if not full_text or len(full_text.split()) < 60 or paragraphs_count < 2:
-                logger.info(f"Container extraction yielded insufficient content for {url}. Retrying with aggressive text density cleaning...")
-                full_text, paragraphs_count = _extract_with_text_density(html_content)
-                
-            if not full_text:
-                raise ValueError("No readable text found on the page after all extraction methods.")
-                
-            # Validate source type and quality
-            source_ok, source_reason = is_valid_source_type(url, title, full_text)
-            if not source_ok:
-                raise ValueError(f"Invalid source type: {source_reason}")
-                
-            quality_ok, quality_reason = validate_content_quality(full_text)
-            if not quality_ok:
-                raise ValueError(f"Invalid content quality: {quality_reason}")
-                
-            # Limit length to ~150-250 words
-            words = full_text.split()
-            if len(words) > 250:
-                full_text = " ".join(words[:250])
-                
-            return full_text
+        for element in soup(["script", "style", "nav", "footer", "header", "aside", "form", "button"]):
+            element.decompose()
+            
+        # Stage 1: Standard Extraction Method
+        full_text, paragraphs_count = _extract_with_standard_p_tags(soup)
+        
+        # Stage 2: Alternative Extraction Method 1 (Targeted Containers)
+        if not full_text or len(full_text.split()) < 60 or paragraphs_count < 2:
+            logger.info(f"Standard extraction yielded insufficient content for {url}. Retrying with targeted containers...")
+            full_text, paragraphs_count = _extract_with_containers(soup)
+            
+        # Stage 3: Alternative Extraction Method 2 (Aggressive HTML Cleaning & Density checking)
+        if not full_text or len(full_text.split()) < 60 or paragraphs_count < 2:
+            logger.info(f"Container extraction yielded insufficient content for {url}. Retrying with aggressive text density cleaning...")
+            full_text, paragraphs_count = _extract_with_text_density(soup)
+            
+        if not full_text:
+            raise ValueError("No readable text found on the page after all extraction methods.")
+            
+        # Limit length to ~150-250 words
+        words = full_text.split()
+        if len(words) > 250:
+            full_text = " ".join(words[:250])
+            
+        # Cache successfully scraped content
+        _scrape_cache.set(url, full_text)
+        return full_text
             
     except Exception as e:
         logger.error(f"Error scraping {url}: {str(e)}")
         raise ValueError(f"Scraping failed: {str(e)}")
 
 
-def _extract_with_standard_p_tags(html: str) -> tuple[str, int]:
+def _extract_with_standard_p_tags(soup: BeautifulSoup) -> tuple[str, int]:
     """Helper method to extract paragraphs using standard soup.find_all('p')."""
-    soup = BeautifulSoup(html, "html.parser")
-    
-    # Remove script and style elements
-    for element in soup(["script", "style", "nav", "footer", "header", "aside"]):
-        element.decompose()
-        
     paragraphs = soup.find_all("p")
     text_blocks = []
     word_count = 0
@@ -113,12 +131,8 @@ def _extract_with_standard_p_tags(html: str) -> tuple[str, int]:
     return " ".join(text_blocks), len(text_blocks)
 
 
-def _extract_with_containers(html: str) -> tuple[str, int]:
+def _extract_with_containers(soup: BeautifulSoup) -> tuple[str, int]:
     """Helper method targeting typical article or main content containers."""
-    soup = BeautifulSoup(html, "html.parser")
-    for element in soup(["script", "style", "nav", "footer", "header", "aside"]):
-        element.decompose()
-        
     # Search for common main content tags
     containers = soup.find_all(["article", "main"])
     if not containers:
@@ -156,12 +170,8 @@ def _extract_with_containers(html: str) -> tuple[str, int]:
     return " ".join(text_blocks), len(text_blocks)
 
 
-def _extract_with_text_density(html: str) -> tuple[str, int]:
+def _extract_with_text_density(soup: BeautifulSoup) -> tuple[str, int]:
     """Helper method doing aggressive cleaning and selecting text based on line density."""
-    soup = BeautifulSoup(html, "html.parser")
-    for element in soup(["script", "style", "nav", "footer", "header", "aside", "form", "button"]):
-        element.decompose()
-        
     # Get raw text with cleaned lines
     raw_lines = [line.strip() for line in soup.get_text().split("\n") if line.strip()]
     

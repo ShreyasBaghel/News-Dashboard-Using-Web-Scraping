@@ -1,12 +1,16 @@
 import logging
 import json
 import re
-from typing import Tuple, Dict, Any, List
+from typing import Tuple, Dict, Any, List, Optional
 from urllib.parse import urlparse
 import httpx
 from app.config import settings
+from app.services.cache import TTLLRUCache
 
 logger = logging.getLogger(__name__)
+
+# Bounded relevance cache with (url, title, keyword) key
+_relevance_cache = TTLLRUCache(maxsize=500, ttl_seconds=1800)
 
 # URL Blacklist configurations
 BLACKLIST_DOMAINS = {
@@ -172,12 +176,17 @@ def validate_content_quality(content: str) -> Tuple[bool, str]:
 
 
 async def validate_relevance(
-    title: str, description: str, url: str, content: str, keyword: str
+    title: str, description: str, url: str, content: str, keyword: str, client: Optional[httpx.AsyncClient] = None
 ) -> Tuple[bool, float, str]:
     """
     Calculates industry relevance score. Rejects non-relevant articles.
     Tries Gemini Flash first, falls back to Ollama, then rule-based heuristics.
     """
+    cache_key = (url, title, keyword)
+    cached_res = _relevance_cache.get(cache_key)
+    if cached_res is not None:
+        return cached_res
+
     # Clean input keyword/topic
     topic = keyword.strip() if keyword else "General Manufacturing & Industry"
     
@@ -189,7 +198,9 @@ async def validate_relevance(
             # Special exceptions (e.g. if the blacklist word is "ai" or "finance" which have conditional rules)
             # But the BLACKLIST_TOPICS list has specific bad terms
             logger.info(f"Pre-filter relevance: Rejected '{title}' due to blacklisted topic: '{blacklist_kw}'")
-            return False, 0.0, f"Contains blacklisted topic keyword: {blacklist_kw}"
+            res = (False, 0.0, f"Contains blacklisted topic keyword: {blacklist_kw}")
+            _relevance_cache.set(cache_key, res)
+            return res
 
     # 1. Primary: Gemini 1.5 Flash
     if settings.GEMINI_API_KEY:
@@ -235,20 +246,26 @@ async def validate_relevance(
         }
         
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                response = await client.post(gemini_url, json=payload)
-                if response.status_code == 200:
-                    res_data = response.json()
-                    res_text = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    parsed = json.loads(res_text)
-                    is_relevant = bool(parsed.get("is_relevant", False))
-                    score = float(parsed.get("relevance_score", 0))
-                    reason = str(parsed.get("reason", "No reason provided"))
-                    
-                    logger.info(f"Gemini Relevance for '{title}': Relevant={is_relevant}, Score={score}, Reason={reason}")
-                    return is_relevant, score, reason
-                else:
-                    logger.warning(f"Gemini API returned status {response.status_code} during relevance validation. Trying Ollama fallback.")
+            timeout_cfg = httpx.Timeout(connect=3.0, read=8.0, write=3.0, pool=5.0)
+            if client is not None:
+                response = await client.post(gemini_url, json=payload, timeout=timeout_cfg)
+            else:
+                async with httpx.AsyncClient(timeout=timeout_cfg) as local_client:
+                    response = await local_client.post(gemini_url, json=payload)
+            if response.status_code == 200:
+                res_data = response.json()
+                res_text = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                parsed = json.loads(res_text)
+                is_relevant = bool(parsed.get("is_relevant", False))
+                score = float(parsed.get("relevance_score", 0))
+                reason = str(parsed.get("reason", "No reason provided"))
+                
+                logger.info(f"Gemini Relevance for '{title}': Relevant={is_relevant}, Score={score}, Reason={reason}")
+                res = (is_relevant, score, reason)
+                _relevance_cache.set(cache_key, res)
+                return res
+            else:
+                logger.warning(f"Gemini API returned status {response.status_code} during relevance validation. Trying Ollama fallback.")
         except Exception as e:
             logger.warning(f"Gemini Relevance API call failed: {str(e)}. Trying Ollama fallback.")
 
@@ -267,18 +284,24 @@ async def validate_relevance(
             "stream": False,
             "options": {"temperature": 0.1}
         }
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(f"{settings.OLLAMA_URL}/api/generate", json=ollama_payload)
-            if response.status_code == 200:
-                data = response.json()
-                raw_response = data.get("response", "").strip()
-                parsed = json.loads(raw_response)
-                is_relevant = bool(parsed.get("is_relevant", False))
-                score = float(parsed.get("relevance_score", 0))
-                reason = str(parsed.get("reason", "Ollama fallback"))
-                
-                logger.info(f"Ollama Relevance for '{title}': Relevant={is_relevant}, Score={score}, Reason={reason}")
-                return is_relevant, score, reason
+        timeout_cfg = httpx.Timeout(connect=3.0, read=15.0, write=3.0, pool=5.0)
+        if client is not None:
+            response = await client.post(f"{settings.OLLAMA_URL}/api/generate", json=ollama_payload, timeout=timeout_cfg)
+        else:
+            async with httpx.AsyncClient(timeout=timeout_cfg) as local_client:
+                response = await local_client.post(f"{settings.OLLAMA_URL}/api/generate", json=ollama_payload)
+        if response.status_code == 200:
+            data = response.json()
+            raw_response = data.get("response", "").strip()
+            parsed = json.loads(raw_response)
+            is_relevant = bool(parsed.get("is_relevant", False))
+            score = float(parsed.get("relevance_score", 0))
+            reason = str(parsed.get("reason", "Ollama fallback"))
+            
+            logger.info(f"Ollama Relevance for '{title}': Relevant={is_relevant}, Score={score}, Reason={reason}")
+            res = (is_relevant, score, reason)
+            _relevance_cache.set(cache_key, res)
+            return res
     except Exception as e:
         logger.warning(f"Ollama Relevance check failed: {str(e)}. Using rule-based fallback.")
 
@@ -301,7 +324,9 @@ async def validate_relevance(
     
     reason = f"Rule-based match (matched keywords: {matches})"
     logger.info(f"Rule-based Relevance for '{title}': Relevant={is_relevant}, Score={score}, Reason={reason}")
-    return is_relevant, score, reason
+    res = (is_relevant, score, reason)
+    _relevance_cache.set(cache_key, res)
+    return res
 
 
 def validate_summary_quality(summary: str, title: str) -> bool:

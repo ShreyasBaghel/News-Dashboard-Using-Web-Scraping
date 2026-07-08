@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { fetchDashboardData, forceRefreshDashboard } from './api/newsApi';
+import { fetchDashboardData, forceRefreshDashboard, pinArticle, unpinArticle } from './api/newsApi';
 import KeywordAutocomplete from './components/KeywordAutocomplete';
 import RefreshTimer from './components/RefreshTimer';
 import PinnedSection from './components/PinnedSection';
 import ArticleGrid from './components/ArticleGrid';
 import ArticleCard from './components/ArticleCard';
 import DalmiaLogo from './components/DalmiaLogo';
-import { Newspaper, AlertCircle, Building2, Terminal, Sun, Moon, Search, Zap } from 'lucide-react';
+import Sidebar from './components/Sidebar';
+import { Newspaper, AlertCircle, Building2, Terminal, Sun, Moon, Search, Zap, Menu } from 'lucide-react';
 
 const LoadingSkeleton = () => (
   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.5rem', width: '100%' }}>
@@ -29,13 +30,21 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [pinnedArticles, setPinnedArticles] = useState([]);
   const [searchKeyword, setSearchKeyword] = useState('');
-  const [activeView, setActiveView] = useState('feed'); // 'feed', 'search', 'pinned'
+  const [activeView, setActiveView] = useState('feed'); // 'feed', 'search'
   const [lastUpdated, setLastUpdated] = useState('');
   const [nextUpdate, setNextUpdate] = useState('');
+
+  const [visibleFeedCount, setVisibleFeedCount] = useState(10);
+  const [visibleSearchCount, setVisibleSearchCount] = useState(10);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  
+  // Sidebar & search state synchronization
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [chips, setChips] = useState([]);
+  const [keywordCounts, setKeywordCounts] = useState({});
   
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('theme') || 'light';
@@ -59,6 +68,9 @@ export default function App() {
       setPinnedArticles(data.pinned_articles || []);
       setLastUpdated(data.last_updated || '');
       setNextUpdate(data.next_update || '');
+      if (data.keyword_counts) {
+        setKeywordCounts(data.keyword_counts);
+      }
     } catch (err) {
       setError(err.message || 'Failed to load news dashboard payload.');
     } finally {
@@ -78,6 +90,9 @@ export default function App() {
       }
       if (data.pinned_articles) {
         setPinnedArticles(data.pinned_articles);
+      }
+      if (data.keyword_counts) {
+        setKeywordCounts(data.keyword_counts);
       }
       setLastUpdated(data.last_updated || '');
       setNextUpdate(data.next_update || '');
@@ -99,12 +114,16 @@ export default function App() {
       const data = await fetchDashboardData(term);
       setSearchResults(data.articles || []);
       setSearchKeyword(term);
-      if (data.pinned_articles && data.pinned_articles.length > 0) {
+      if (data.pinned_articles) {
         setPinnedArticles(data.pinned_articles);
+      }
+      if (data.keyword_counts) {
+        setKeywordCounts(data.keyword_counts);
       }
       if (data.last_updated) setLastUpdated(data.last_updated);
       if (data.next_update) setNextUpdate(data.next_update);
       setActiveView('search');
+      setVisibleSearchCount(10); // Reset search pagination count
     } catch (err) {
       setError(err.message || 'Search failed.');
     } finally {
@@ -115,7 +134,41 @@ export default function App() {
   const handleClear = () => {
     setSearchKeyword('');
     setSearchResults([]);
+    setChips([]);
     setActiveView('feed');
+    setVisibleFeedCount(10); // Reset feed pagination count
+  };
+
+  const handleSelectSidebarTag = (tag) => {
+    if (chips.length === 1 && chips[0] === tag) {
+      handleClear();
+    } else {
+      setChips([tag]);
+      handleSearch(tag);
+    }
+  };
+
+  const handleTogglePin = async (article) => {
+    try {
+      let data;
+      if (article.is_pinned) {
+        data = await unpinArticle(article.url, searchKeyword);
+      } else {
+        data = await pinArticle(article, searchKeyword);
+      }
+      if (searchKeyword) {
+        setSearchResults(data.articles || []);
+      } else {
+        setNormalFeed(data.articles || []);
+      }
+      if (data.pinned_articles) {
+        setPinnedArticles(data.pinned_articles);
+      }
+      if (data.last_updated) setLastUpdated(data.last_updated);
+      if (data.next_update) setNextUpdate(data.next_update);
+    } catch (err) {
+      setError(err.message || 'Failed to toggle pin state.');
+    }
   };
 
   return (
@@ -194,217 +247,346 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Search Panel */}
-      <KeywordAutocomplete onSearch={handleSearch} onClear={handleClear} isLoading={isLoading || isRefreshing} />
+      {/* Main Search Panel & Toggle */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', width: '100%', position: 'relative', zIndex: 95 }}>
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className="glass-panel"
+          style={{
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-color)',
+            color: 'var(--text-primary)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '0.6rem 1.25rem',
+            borderRadius: '100px',
+            gap: '0.5rem',
+            fontWeight: 600,
+            fontSize: '0.9rem',
+            transition: 'var(--transition-bounce)',
+            flexShrink: 0,
+            height: '45px'
+          }}
+          title={sidebarOpen ? "Hide Topics" : "Show Topics"}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = 'var(--color-primary)';
+            e.currentTarget.style.color = 'var(--color-primary)';
+            e.currentTarget.style.transform = 'scale(1.03)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = 'var(--border-color)';
+            e.currentTarget.style.color = 'var(--text-primary)';
+            e.currentTarget.style.transform = 'scale(1)';
+          }}
+        >
+          <Menu size={16} style={{ color: 'var(--color-secondary)' }} />
+          <span className="sidebar-toggle-text">{sidebarOpen ? "Hide Topics" : "Show Topics"}</span>
+        </button>
 
-      {/* Navigation Tabs */}
-      <div className="nav-tabs-container glass-panel animate-fade-in">
-        {[
-          { id: 'feed', label: 'Home Feed', icon: Newspaper, count: normalFeed.length },
-          { id: 'search', label: 'Search Results', icon: Search, count: searchKeyword ? searchResults.length : null },
-          { id: 'pinned', label: 'Pinned Intel', icon: Zap, count: pinnedArticles.length }
-        ].map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeView === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveView(tab.id)}
-              className={`nav-tab-button ${isActive ? 'active' : ''}`}
-            >
-              <Icon size={18} style={{ color: isActive ? '#ffffff' : 'var(--color-primary)', flexShrink: 0 }} />
-              <span>{tab.label}</span>
-              {tab.count !== null && (
-                <span className="nav-tab-badge">
-                  {tab.count}
-                </span>
-              )}
-            </button>
-          );
-        })}
+        <KeywordAutocomplete 
+          onSearch={handleSearch} 
+          onClear={handleClear} 
+          isLoading={isLoading || isRefreshing} 
+          chips={chips}
+          setChips={setChips}
+        />
       </div>
 
-      {/* Refresh Scheduler Status */}
-      {nextUpdate && (
-        <RefreshTimer 
-          nextUpdate={nextUpdate} 
-          onManualRefresh={handleForceRefresh} 
-          isLoading={isRefreshing} 
+      {/* Mobile Sidebar Backdrop Overlay */}
+      {sidebarOpen && (
+        <div 
+          onClick={() => setSidebarOpen(false)}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0, 0, 0, 0.4)',
+            backdropFilter: 'blur(4px)',
+            zIndex: 95,
+            transition: 'all 0.3s ease'
+          }}
+          className="mobile-sidebar-backdrop"
         />
       )}
 
-      {/* Errors display */}
-      {error && (() => {
-        const isConnError = error.startsWith("ConnectionError:");
-        const displayError = isConnError ? error.replace("ConnectionError:", "").trim() : error;
-        return (
-          <div 
-            className="glass-panel animate-fade-in"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.75rem',
-              padding: '1rem 1.5rem',
-              borderColor: isConnError 
-                ? (theme === 'light' ? '#fee2e2' : 'rgba(239, 68, 68, 0.3)')
-                : (theme === 'light' ? '#fde68a' : 'rgba(245, 158, 11, 0.3)'),
-              background: isConnError
-                ? (theme === 'light' ? '#fef2f2' : 'rgba(239, 68, 68, 0.1)')
-                : (theme === 'light' ? '#fffbeb' : 'rgba(245, 158, 11, 0.05)'),
-              color: isConnError
-                ? (theme === 'light' ? '#991b1b' : '#fca5a5')
-                : (theme === 'light' ? '#b45309' : '#fcd34d'),
-              borderRadius: 'var(--radius-md)'
-            }}
-          >
-            <AlertCircle size={20} style={{ flexShrink: 0 }} />
-            <div style={{ fontSize: '0.9rem' }}>
-              <strong>{isConnError ? 'Connection Error:' : 'Pipeline Sync Warning:'}</strong> {displayError}
-            </div>
-          </div>
-        );
-      })()}
+      {/* Split layout: Sidebar + Main feed */}
+      <div style={{ display: 'flex', gap: '2rem', width: '100%', alignItems: 'flex-start', position: 'relative' }}>
+        
+        <Sidebar 
+          keywordCounts={keywordCounts}
+          chips={chips}
+          onSelectKeyword={handleSelectSidebarTag}
+          isOpen={sidebarOpen}
+          onToggle={() => setSidebarOpen(!sidebarOpen)}
+        />
 
-      {/* Loading Skeleton / Main View Content */}
-      {isLoading ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div className="glass-panel shimmer" style={{ height: '30px', width: '200px', borderRadius: '4px' }} />
-            <LoadingSkeleton />
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+        {/* Main Feed Content Area */}
+        <div style={{ flexGrow: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
           
-          {/* Feed View */}
-          {activeView === 'feed' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
-                <Newspaper size={18} style={{ color: 'var(--color-primary)' }} />
-                <h2 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-title)' }}>
-                  General Manufacturing & Industry Feed
-                </h2>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                  Showing {normalFeed.length} summarized articles
-                </span>
+          {/* Navigation Tabs */}
+          <div className="nav-tabs-container glass-panel animate-fade-in">
+            {[
+              { id: 'feed', label: 'Home Feed', icon: Newspaper, count: normalFeed.length + pinnedArticles.length },
+              { id: 'search', label: 'Search Results', icon: Search, count: searchKeyword ? searchResults.length + pinnedArticles.length : null }
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeView === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveView(tab.id)}
+                  className={`nav-tab-button ${isActive ? 'active' : ''}`}
+                >
+                  <Icon size={18} style={{ color: isActive ? '#ffffff' : 'var(--color-primary)', flexShrink: 0 }} />
+                  <span>{tab.label}</span>
+                  {tab.count !== null && (
+                    <span className="nav-tab-badge">
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Refresh Scheduler Status */}
+          {nextUpdate && (
+            <RefreshTimer 
+              nextUpdate={nextUpdate} 
+              onManualRefresh={handleForceRefresh} 
+              isLoading={isRefreshing} 
+            />
+          )}
+
+          {/* Errors display */}
+          {error && (() => {
+            const isConnError = error.startsWith("ConnectionError:");
+            const displayError = isConnError ? error.replace("ConnectionError:", "").trim() : error;
+            return (
+              <div 
+                className="glass-panel animate-fade-in"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  padding: '1rem 1.5rem',
+                  borderColor: isConnError 
+                    ? (theme === 'light' ? '#fee2e2' : 'rgba(239, 68, 68, 0.3)')
+                    : (theme === 'light' ? '#fde68a' : 'rgba(245, 158, 11, 0.3)'),
+                  background: isConnError
+                    ? (theme === 'light' ? '#fef2f2' : 'rgba(239, 68, 68, 0.1)')
+                    : (theme === 'light' ? '#fffbeb' : 'rgba(245, 158, 11, 0.05)'),
+                  color: isConnError
+                    ? (theme === 'light' ? '#991b1b' : '#fca5a5')
+                    : (theme === 'light' ? '#b45309' : '#fcd34d'),
+                  borderRadius: 'var(--radius-md)'
+                }}
+              >
+                <AlertCircle size={20} style={{ flexShrink: 0 }} />
+                <div style={{ fontSize: '0.9rem' }}>
+                  <strong>{isConnError ? 'Connection Error:' : 'Pipeline Sync Warning:'}</strong> {displayError}
+                </div>
               </div>
+            );
+          })()}
 
-              {normalFeed.length > 0 ? (
-                <ArticleGrid>
-                  {normalFeed.map((article, idx) => (
-                    <ArticleCard key={`general-${idx}`} article={article} />
-                  ))}
-                </ArticleGrid>
-              ) : (
-                <div 
-                  className="glass-panel"
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '4rem 2rem',
-                    textAlign: 'center',
-                    color: 'var(--text-secondary)',
-                    gap: '0.75rem'
-                  }}
-                >
-                  <Newspaper size={48} style={{ color: 'var(--text-muted)' }} />
-                  <h3 style={{ fontSize: '1.15rem', color: 'var(--text-primary)' }}>No articles found</h3>
-                  <p style={{ fontSize: '0.9rem', maxWidth: '400px' }}>
-                    The industry feed is currently empty.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Search View */}
-          {activeView === 'search' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
-                <Search size={18} style={{ color: 'var(--color-primary)' }} />
-                <h2 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-title)' }}>
-                  {searchKeyword ? `Topic Intelligence: "${searchKeyword}"` : 'Search Results'}
-                </h2>
-                {searchKeyword && (
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
-                    Showing {searchResults.length} summarized articles
-                  </span>
-                )}
+          {/* Loading Skeleton / Main View Content */}
+          {isLoading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div className="glass-panel shimmer" style={{ height: '30px', width: '200px', borderRadius: '4px' }} />
+                <LoadingSkeleton />
               </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+              
+              {/* Feed View */}
+              {activeView === 'feed' && (() => {
+                const combinedFeed = [...pinnedArticles, ...normalFeed];
+                const paginatedFeed = combinedFeed.slice(0, pinnedArticles.length + visibleFeedCount);
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
+                      <Newspaper size={18} style={{ color: 'var(--color-primary)' }} />
+                      <h2 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-title)' }}>
+                        General Manufacturing & Industry Feed
+                      </h2>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                        Showing {combinedFeed.length} summarized articles
+                      </span>
+                    </div>
 
-              {!searchKeyword ? (
-                <div className="glass-panel welcome-panel animate-fade-in">
-                  <Search size={48} style={{ color: 'var(--text-muted)' }} />
-                  <h3 style={{ fontSize: '1.25rem', color: 'var(--text-primary)', fontFamily: 'var(--font-title)' }}>
-                    AI Search Desk
-                  </h3>
-                  <p style={{ fontSize: '0.95rem', maxWidth: '450px', lineHeight: 1.6 }}>
-                    Enter industry, technology, or competitor keywords in the search bar above to fetch targeted real-time intelligence reports.
-                  </p>
-                </div>
-              ) : searchResults.length > 0 ? (
-                <ArticleGrid>
-                  {searchResults.map((article, idx) => (
-                    <ArticleCard key={`search-${idx}`} article={article} />
-                  ))}
-                </ArticleGrid>
-              ) : (
-                <div 
-                  className="glass-panel"
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '4rem 2rem',
-                    textAlign: 'center',
-                    color: 'var(--text-secondary)',
-                    gap: '0.75rem'
-                  }}
-                >
-                  <Newspaper size={48} style={{ color: 'var(--text-muted)' }} />
-                  <h3 style={{ fontSize: '1.15rem', color: 'var(--text-primary)' }}>No matching articles found</h3>
-                  <p style={{ fontSize: '0.9rem', maxWidth: '400px' }}>
-                    All raw articles for this topic were either filtered due to the 7-day de-duplication rules, or search results were empty.
-                  </p>
-                </div>
-              )}
+                    {combinedFeed.length > 0 ? (
+                      <>
+                        <ArticleGrid>
+                          {paginatedFeed.map((article, idx) => (
+                            <ArticleCard 
+                              key={`general-${idx}`} 
+                              article={article} 
+                              onTogglePin={handleTogglePin} 
+                            />
+                          ))}
+                        </ArticleGrid>
+                        {combinedFeed.length > paginatedFeed.length && (
+                          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem' }}>
+                            <button
+                              onClick={() => setVisibleFeedCount(prev => prev + 10)}
+                              style={{
+                                background: 'var(--bg-surface)',
+                                border: '1px solid var(--border-color)',
+                                color: 'var(--text-primary)',
+                                padding: '0.75rem 2rem',
+                                borderRadius: '100px',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                boxShadow: 'var(--shadow-panel)',
+                                transition: 'var(--transition-bounce)'
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.borderColor = 'var(--color-primary)';
+                                e.currentTarget.style.color = 'var(--color-primary)';
+                                e.currentTarget.style.transform = 'scale(1.03)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.borderColor = 'var(--border-color)';
+                                e.currentTarget.style.color = 'var(--text-primary)';
+                                e.currentTarget.style.transform = 'scale(1)';
+                              }}
+                            >
+                              Load More Articles
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div 
+                        className="glass-panel"
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: '4rem 2rem',
+                          textAlign: 'center',
+                          color: 'var(--text-secondary)',
+                          gap: '0.75rem'
+                        }}
+                      >
+                        <Newspaper size={48} style={{ color: 'var(--text-muted)' }} />
+                        <h3 style={{ fontSize: '1.15rem', color: 'var(--text-primary)' }}>No articles found</h3>
+                        <p style={{ fontSize: '0.9rem', maxWidth: '400px' }}>
+                          The industry feed is currently empty.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Search View */}
+              {activeView === 'search' && (() => {
+                const combinedSearch = [...pinnedArticles, ...searchResults];
+                const paginatedSearch = combinedSearch.slice(0, pinnedArticles.length + visibleSearchCount);
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
+                      <Search size={18} style={{ color: 'var(--color-primary)' }} />
+                      <h2 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-title)' }}>
+                        {searchKeyword ? `Topic Intelligence: "${searchKeyword}"` : 'Search Results'}
+                      </h2>
+                      {searchKeyword && (
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                          Showing {combinedSearch.length} summarized articles
+                        </span>
+                      )}
+                    </div>
+
+                    {!searchKeyword ? (
+                      <div className="glass-panel welcome-panel animate-fade-in">
+                        <Search size={48} style={{ color: 'var(--text-muted)' }} />
+                        <h3 style={{ fontSize: '1.25rem', color: 'var(--text-primary)', fontFamily: 'var(--font-title)' }}>
+                          AI Search Desk
+                        </h3>
+                        <p style={{ fontSize: '0.95rem', maxWidth: '450px', lineHeight: 1.6 }}>
+                          Enter industry, technology, or competitor keywords in the search bar above to fetch targeted real-time intelligence reports.
+                        </p>
+                      </div>
+                    ) : combinedSearch.length > 0 ? (
+                      <>
+                        <ArticleGrid>
+                          {paginatedSearch.map((article, idx) => (
+                            <ArticleCard 
+                              key={`search-${idx}`} 
+                              article={article} 
+                              onTogglePin={handleTogglePin} 
+                            />
+                          ))}
+                        </ArticleGrid>
+                        {combinedSearch.length > paginatedSearch.length && (
+                          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem' }}>
+                            <button
+                              onClick={() => setVisibleSearchCount(prev => prev + 10)}
+                              style={{
+                                background: 'var(--bg-surface)',
+                                border: '1px solid var(--border-color)',
+                                color: 'var(--text-primary)',
+                                padding: '0.75rem 2rem',
+                                borderRadius: '100px',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                boxShadow: 'var(--shadow-panel)',
+                                transition: 'var(--transition-bounce)'
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.borderColor = 'var(--color-primary)';
+                                e.currentTarget.style.color = 'var(--color-primary)';
+                                e.currentTarget.style.transform = 'scale(1.03)';
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.borderColor = 'var(--border-color)';
+                                e.currentTarget.style.color = 'var(--text-primary)';
+                                e.currentTarget.style.transform = 'scale(1)';
+                              }}
+                            >
+                              Load More Articles
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div 
+                        className="glass-panel"
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: '4rem 2rem',
+                          textAlign: 'center',
+                          color: 'var(--text-secondary)',
+                          gap: '0.75rem'
+                        }}
+                      >
+                        <Newspaper size={48} style={{ color: 'var(--text-muted)' }} />
+                        <h3 style={{ fontSize: '1.15rem', color: 'var(--text-primary)' }}>No matching articles found</h3>
+                        <p style={{ fontSize: '0.9rem', maxWidth: '400px' }}>
+                          All raw articles for this topic were either filtered due to the 7-day de-duplication rules, or search results were empty.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
             </div>
           )}
-
-          {/* Pinned View */}
-          {activeView === 'pinned' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              {pinnedArticles.length > 0 ? (
-                <PinnedSection articles={pinnedArticles} />
-              ) : (
-                <div 
-                  className="glass-panel"
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '4rem 2rem',
-                    textAlign: 'center',
-                    color: 'var(--text-secondary)',
-                    gap: '0.75rem'
-                  }}
-                >
-                  <Zap size={48} style={{ color: 'var(--text-muted)' }} />
-                  <h3 style={{ fontSize: '1.15rem', color: 'var(--text-primary)' }}>No pinned articles</h3>
-                  <p style={{ fontSize: '0.9rem', maxWidth: '400px' }}>
-                    There are no high-impact company articles pinned at the moment.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
         </div>
-      )}
+      </div>
     </div>
   );
 }

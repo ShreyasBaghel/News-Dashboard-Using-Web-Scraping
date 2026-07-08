@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { ExternalLink, ChevronDown, ChevronUp, Calendar, Newspaper, Info } from 'lucide-react';
+import { ExternalLink, ChevronDown, ChevronUp, Calendar, Newspaper, Info, Pin } from 'lucide-react';
 
-export default function ArticleCard({ article }) {
+export default function ArticleCard({ article, onTogglePin }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const { title, url, source, published_at, summary, scraped_content, company, is_pinned } = article;
 
@@ -89,6 +89,67 @@ export default function ArticleCard({ article }) {
         }
       }}
     >
+      {/* Pinned Ribbon */}
+      {is_pinned && (
+        <div 
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            background: 'linear-gradient(135deg, #e2a02b 0%, #b45309 100%)',
+            color: '#ffffff',
+            fontSize: '0.65rem',
+            fontWeight: 800,
+            padding: '0.15rem 0.5rem',
+            borderBottomRightRadius: '4px',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+            zIndex: 9,
+            letterSpacing: '0.05em',
+            textTransform: 'uppercase'
+          }}
+        >
+          Pinned
+        </div>
+      )}
+
+      {/* Pin Toggle Button */}
+      {onTogglePin && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onTogglePin(article);
+          }}
+          style={{
+            position: 'absolute',
+            top: '0.5rem',
+            right: '0.5rem',
+            background: is_pinned ? 'rgba(226, 160, 43, 0.15)' : 'rgba(0, 0, 0, 0.03)',
+            border: is_pinned ? '1px solid rgba(226, 160, 43, 0.4)' : '1px solid var(--border-color)',
+            borderRadius: '50%',
+            width: '28px',
+            height: '28px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            color: is_pinned ? '#e2a02b' : 'var(--text-muted)',
+            zIndex: 10,
+            transition: 'all 0.2s ease',
+            outline: 'none'
+          }}
+          title={is_pinned ? "Unpin Article" : "Pin Article"}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = 'scale(1.1)';
+            e.currentTarget.style.background = is_pinned ? 'rgba(226, 160, 43, 0.25)' : 'rgba(0, 0, 0, 0.08)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = 'scale(1)';
+            e.currentTarget.style.background = is_pinned ? 'rgba(226, 160, 43, 0.15)' : 'rgba(0, 0, 0, 0.03)';
+          }}
+        >
+          <Pin size={13} style={{ transform: is_pinned ? 'rotate(45deg)' : 'none', fill: is_pinned ? '#e2a02b' : 'none' }} />
+        </button>
+      )}
       {/* Brand Pill for Pinned Tech articles */}
       {brand && (
         <div 
