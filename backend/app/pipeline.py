@@ -297,7 +297,8 @@ async def process_and_validate_candidate(
             "scraped_content": scraped_text,
             "keyword": keyword if not is_pinned else art.get("company"),
             "is_pinned": is_pinned,
-            "company": art.get("company") if is_pinned else None
+            "company": art.get("company") if is_pinned else None,
+            "validation_relevance_score": score
         }
 
 def _generate_fallback_article(keyword: str, used_urls: set) -> Dict[str, Any]:
@@ -328,7 +329,8 @@ def _generate_fallback_article(keyword: str, used_urls: set) -> Dict[str, Any]:
         "scraped_content": content,
         "keyword": keyword,
         "is_pinned": False,
-        "company": None
+        "company": None,
+        "validation_relevance_score": 80.0
     }
 
 async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = False) -> Dict[str, Any]:
@@ -711,6 +713,13 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     # Deduplicate summarized feed
     summarized_articles = deduplicate_articles(summarized_articles)
     summarized_pinned = deduplicate_articles(summarized_pinned)
+    
+    # Run the LLM reasoning intelligence enrichment phase
+    from app.services.llm_reasoning import enrich_articles_with_llm
+    logger.info("Enriching final dynamic articles with LLM intelligence...")
+    summarized_articles = await enrich_articles_with_llm(summarized_articles)
+    logger.info("Enriching final pinned articles with LLM intelligence...")
+    summarized_pinned = await enrich_articles_with_llm(summarized_pinned)
     
     # Calculate keyword counts for all cached keywords using synonyms and whole-word matching
     cached_keywords = get_cached_keywords()

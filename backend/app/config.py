@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     OLLAMA_HOST: str = "http://localhost:11434"
     OLLAMA_URL: str = "http://localhost:11434" # Compatibility
     
+    # LLM Intelligence Settings
+    ENABLE_LLM_REASONING: bool = True
+    OLLAMA_TIMEOUT: float = 30.0
+    LLM_BATCH_SIZE: int = 3
+    LLM_CACHE_ENABLED: bool = True
+    LLM_CACHE_TTL: int = 604800 # 7 days in seconds
+    
     # Cache settings from the plan
     CACHE_FILE_PATH: str = "./cache.json"
     REFRESH_INTERVAL_HOURS: int = 12

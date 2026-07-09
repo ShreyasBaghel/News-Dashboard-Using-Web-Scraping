@@ -1,9 +1,13 @@
 import React, { useState } from 'react';
-import { ExternalLink, ChevronDown, ChevronUp, Calendar, Newspaper, Info, Pin } from 'lucide-react';
+import { ExternalLink, ChevronDown, ChevronUp, Calendar, Newspaper, Info, Pin, Sparkles, Cpu } from 'lucide-react';
 
 export default function ArticleCard({ article, onTogglePin }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { title, url, source, published_at, summary, scraped_content, company, is_pinned } = article;
+  const [isIntelExpanded, setIsIntelExpanded] = useState(false);
+  const { 
+    title, url, source, published_at, summary, scraped_content, company, is_pinned,
+    executive_summary, business_implications, ai_relevance, industry_categories, innovation_score, sentiment
+  } = article;
 
   // Format date nicely
   const formatDate = (dateStr) => {
@@ -239,6 +243,147 @@ export default function ArticleCard({ article, onTogglePin }) {
           {summary}
         </p>
       </div>
+
+      {/* Business Intelligence Accordion */}
+      {executive_summary && (
+        <div style={{ borderTop: '1px solid var(--border-color)', background: 'linear-gradient(180deg, rgba(226, 160, 43, 0.02) 0%, rgba(226, 160, 43, 0.05) 100%)' }}>
+          <button
+            onClick={() => setIsIntelExpanded(!isIntelExpanded)}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0.75rem 1.25rem',
+              background: 'none',
+              border: 'none',
+              color: 'var(--color-secondary)',
+              fontSize: '0.85rem',
+              fontWeight: 700,
+              cursor: 'pointer',
+              outline: 'none',
+              transition: 'var(--transition-smooth)'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
+            onMouseLeave={(e) => e.currentTarget.style.color = 'var(--color-secondary)'}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Sparkles size={14} style={{ fill: 'currentColor' }} />
+              Business Intelligence Insights
+            </span>
+            {isIntelExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+
+          {isIntelExpanded && (
+            <div style={{ padding: '0 1.25rem 1.25rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              
+              {/* Sentiment & Innovation Score */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', fontWeight: 700 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Sentiment:</span>
+                  <span 
+                    style={{
+                      padding: '0.15rem 0.6rem',
+                      borderRadius: '100px',
+                      textTransform: 'uppercase',
+                      fontSize: '0.65rem',
+                      letterSpacing: '0.03em',
+                      backgroundColor: 
+                        sentiment === 'Positive' ? 'rgba(34, 197, 94, 0.15)' :
+                        sentiment === 'Negative' ? 'rgba(239, 68, 68, 0.15)' :
+                        sentiment === 'Mixed' ? 'rgba(168, 85, 247, 0.15)' :
+                        'rgba(148, 163, 184, 0.15)',
+                      color:
+                        sentiment === 'Positive' ? '#22c55e' :
+                        sentiment === 'Negative' ? '#ef4444' :
+                        sentiment === 'Mixed' ? '#a855f7' :
+                        'var(--text-muted)',
+                      border: 
+                        sentiment === 'Positive' ? '1px solid rgba(34, 197, 94, 0.3)' :
+                        sentiment === 'Negative' ? '1px solid rgba(239, 68, 68, 0.3)' :
+                        sentiment === 'Mixed' ? '1px solid rgba(168, 85, 247, 0.3)' :
+                        '1px solid rgba(148, 163, 184, 0.3)'
+                    }}
+                  >
+                    {sentiment}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', fontWeight: 700, marginLeft: 'auto' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Innovation:</span>
+                  <span 
+                    style={{
+                      padding: '0.15rem 0.5rem',
+                      borderRadius: '4px',
+                      background: 'linear-gradient(135deg, #e2a02b 0%, #b45309 100%)',
+                      color: '#ffffff',
+                      fontSize: '0.7rem'
+                    }}
+                  >
+                    {innovation_score}/100
+                  </span>
+                </div>
+              </div>
+
+              {/* Categories */}
+              {industry_categories && industry_categories.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Categories:</span>
+                  {industry_categories.map((cat, idx) => (
+                    <span 
+                      key={idx}
+                      style={{
+                        fontSize: '0.65rem',
+                        fontWeight: 600,
+                        padding: '0.1rem 0.45rem',
+                        borderRadius: '4px',
+                        backgroundColor: 'var(--border-color)',
+                        color: 'var(--text-secondary)',
+                        border: '1px solid rgba(0,0,0,0.03)'
+                      }}
+                    >
+                      {cat}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Executive Summary */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', borderLeft: '2px solid var(--color-secondary)', paddingLeft: '0.75rem' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Executive Summary</span>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+                  {executive_summary}
+                </p>
+              </div>
+
+              {/* Implications */}
+              {business_implications && business_implications.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Business Implications</span>
+                  <ul style={{ paddingLeft: '1.1rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    {business_implications.map((imp, idx) => (
+                      <li key={idx} style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                        {imp}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* AI Tech */}
+              {ai_relevance && (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.35rem', padding: '0.5rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(26, 58, 92, 0.03)', border: '1px solid var(--border-color)' }}>
+                  <Cpu size={14} style={{ color: brand ? brand.text : 'var(--color-primary)', marginTop: '2px', flexShrink: 0 }} />
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                    <strong style={{ color: 'var(--text-primary)' }}>AI Tech:</strong> {ai_relevance}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Accordion expander for scraped text */}
       {scraped_content && (

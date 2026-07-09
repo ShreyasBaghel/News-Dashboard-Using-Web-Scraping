@@ -13,6 +13,14 @@ class Article(BaseModel):
     company: Optional[str] = None  # NVIDIA, Microsoft, OpenAI for pinned articles
     relevance_score: Optional[float] = 0.0
     canonical_url: Optional[str] = None
+    
+    # LLM Intelligence enrichment fields
+    executive_summary: Optional[str] = None
+    business_implications: Optional[List[str]] = None
+    ai_relevance: Optional[str] = None
+    industry_categories: Optional[List[str]] = None
+    innovation_score: Optional[int] = None
+    sentiment: Optional[str] = None
 
 class DashboardPayload(BaseModel):
     keyword: str

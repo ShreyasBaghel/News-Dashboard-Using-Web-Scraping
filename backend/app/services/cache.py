@@ -79,6 +79,67 @@ def init_db():
         )
     """)
     
+    # Table for storing LLM reasoning results per article
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS llm_cache (
+            cache_key TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+
+def get_cached_llm_insights(cache_key: str) -> Optional[Dict[str, Any]]:
+    """Retrieve cached LLM insights for a given key, validating TTL."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT payload, updated_at FROM llm_cache WHERE cache_key = ?",
+        (cache_key,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        payload_str = row['payload']
+        updated_at_str = row['updated_at']
+        try:
+            # Check TTL
+            updated_dt = datetime.strptime(updated_at_str, '%Y-%m-%d %H:%M:%S')
+            age_seconds = (datetime.utcnow() - updated_dt).total_seconds()
+            if age_seconds <= settings.LLM_CACHE_TTL:
+                return json.loads(payload_str)
+            else:
+                logger.info(f"LLM cache expired for key: {cache_key}")
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM llm_cache WHERE cache_key = ?", (cache_key,))
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            logger.error(f"Error reading LLM cache TTL: {e}")
+            try:
+                return json.loads(payload_str)
+            except Exception:
+                pass
+    return None
+
+def save_cached_llm_insights(cache_key: str, payload: Dict[str, Any]):
+    """Save/update LLM insights in SQLite cache."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    payload_str = json.dumps(payload)
+    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO llm_cache (cache_key, payload, updated_at)
+        VALUES (?, ?, ?)
+        """,
+        (cache_key, payload_str, now_str)
+    )
     conn.commit()
     conn.close()
 
