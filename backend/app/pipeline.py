@@ -36,6 +36,35 @@ logger = logging.getLogger(__name__)
 
 TARGET_ARTICLE_COUNT = 50
 
+import re
+
+SYNONYMS_EXPANSION = {
+    "artificial intelligence": ["artificial intelligence", "ai", "a.i."],
+    "electric vehicles": ["electric vehicles", "electric vehicle", "ev", "evs"],
+    "machine learning": ["machine learning", "ml"]
+}
+
+def has_whole_word_match(text: str, keyword: str) -> bool:
+    """Check if the keyword matches as a whole word or phrase in text (case-insensitive)."""
+    if not text or not keyword:
+        return False
+    kw_lower = keyword.lower().strip()
+    text_lower = text.lower()
+    
+    if kw_lower not in text_lower:
+        return False
+        
+    start_boundary = r'\b' if kw_lower[0].isalnum() else ''
+    end_boundary = r'\b' if kw_lower[-1].isalnum() else ''
+    
+    pattern = start_boundary + re.escape(kw_lower) + end_boundary
+    try:
+        rx = re.compile(pattern)
+        return bool(rx.search(text_lower))
+    except re.error:
+        return kw_lower in text_lower
+
+
 @functools.lru_cache(maxsize=128)
 def preprocess_keyword_string(keyword: str) -> List[str]:
     """Helper to split and normalize keyword comma-separated terms with caching."""
@@ -69,17 +98,26 @@ def calculate_article_score(article: Dict[str, Any], keyword: str, seen_domains:
         
     # 2. Keyword Match Strength
     match_score = 0.0
-    title = article.get("title", "").lower()
-    desc = (article.get("description", "") or "").lower()
-    summary = (article.get("summary", "") or "").lower()
-    scraped = (article.get("scraped_content", "") or "").lower()
+    title = article.get("title", "")
+    desc = article.get("description", "") or ""
+    summary = article.get("summary", "") or ""
+    scraped = article.get("scraped_content", "") or ""
     
     # Split keyword if it contains comma-separated terms (search keyword tags)
     keywords = preprocess_keyword_string(keyword)
+    # Expand keywords with synonyms
+    expanded_keywords = []
     for kw in keywords:
-        if kw in title:
+        kw_lower = kw.lower().strip()
+        if kw_lower in SYNONYMS_EXPANSION:
+            expanded_keywords.extend(SYNONYMS_EXPANSION[kw_lower])
+        else:
+            expanded_keywords.append(kw_lower)
+            
+    for kw in expanded_keywords:
+        if has_whole_word_match(title, kw):
             match_score += 2.0
-        if kw in desc or kw in summary or kw in scraped:
+        if has_whole_word_match(desc, kw) or has_whole_word_match(summary, kw) or has_whole_word_match(scraped, kw):
             match_score += 0.5
             
     # 3. Source Diversity Bonus
@@ -343,12 +381,21 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     # 2. Query local pool
     pool_articles = load_pool_from_disk()
     
+    # Expand selected_keywords with synonyms for matching
+    expanded_keywords = []
+    for kw in selected_keywords:
+        kw_lower = kw.lower().strip()
+        if kw_lower in SYNONYMS_EXPANSION:
+            expanded_keywords.extend(SYNONYMS_EXPANSION[kw_lower])
+        else:
+            expanded_keywords.append(kw_lower)
+            
     # Filter pool for articles whose title/description contains any of the selected keywords (OR matching)
     pool_candidates = []
     for art in pool_articles:
-        title = art.get("title", "").lower()
-        desc = art.get("description", "").lower()
-        if any(kw in title or kw in desc for kw in selected_keywords):
+        title = art.get("title", "")
+        desc = art.get("description", "") or ""
+        if any(has_whole_word_match(title, kw) or has_whole_word_match(desc, kw) for kw in expanded_keywords):
             # Check language of candidate article metadata
             if is_english(art.get("title", ""), art.get("description", "") or ""):
                 pool_candidates.append(art)
@@ -665,7 +712,7 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     summarized_articles = deduplicate_articles(summarized_articles)
     summarized_pinned = deduplicate_articles(summarized_pinned)
     
-    # Calculate keyword counts for all cached keywords
+    # Calculate keyword counts for all cached keywords using synonyms and whole-word matching
     cached_keywords = get_cached_keywords()
     keyword_counts = {}
     if cached_keywords:
@@ -673,11 +720,18 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
         all_source_arts = pool_articles_full + raw_pinned
         for kw in cached_keywords:
             kw_lower = kw.lower().strip()
+            
+            expanded_keywords = []
+            if kw_lower in SYNONYMS_EXPANSION:
+                expanded_keywords.extend(SYNONYMS_EXPANSION[kw_lower])
+            else:
+                expanded_keywords.append(kw_lower)
+                
             cnt = 0
             for art in all_source_arts:
-                title_lower = art.get("title", "").lower()
-                desc_lower = (art.get("description", "") or "").lower()
-                if kw_lower in title_lower or kw_lower in desc_lower:
+                title = art.get("title", "")
+                desc = art.get("description", "") or ""
+                if any(has_whole_word_match(title, k) or has_whole_word_match(desc, k) for k in expanded_keywords):
                     cnt += 1
             keyword_counts[kw] = cnt
 
