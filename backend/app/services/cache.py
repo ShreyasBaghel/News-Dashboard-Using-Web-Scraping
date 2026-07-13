@@ -6,7 +6,7 @@ import logging
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, Tuple, Generic, TypeVar
+from typing import Optional, Dict, Any, Tuple, Generic, TypeVar, List
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,15 @@ def init_db():
         )
     """)
     
+    # Table for storing article-level keyword generation results
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS article_keywords (
+            url TEXT PRIMARY KEY,
+            keywords TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
     conn.commit()
     conn.close()
 
@@ -142,6 +151,71 @@ def save_cached_llm_insights(cache_key: str, payload: Dict[str, Any]):
     )
     conn.commit()
     conn.close()
+
+def get_cached_keywords_for_article(url: str) -> Optional[List[str]]:
+    """Retrieve cached keywords for a given article URL."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT keywords FROM article_keywords WHERE url = ?",
+        (url.strip(),)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        try:
+            keywords = json.loads(row[0])
+            placeholders = [
+                ["Manufacturing", "Industrial Technology", "General"],
+                ["Manufacturing", "Automation", "Industry Insights"]
+            ]
+            if keywords in placeholders:
+                logger.info(f"Detected placeholder keywords {keywords} for {url}. Invalidating and deleting cache entry.")
+                try:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM article_keywords WHERE url = ?", (url.strip(),))
+                    conn.commit()
+                    conn.close()
+                except Exception as db_err:
+                    logger.error(f"Failed to delete invalidated placeholder keywords from database: {db_err}")
+                return None
+            return keywords
+        except Exception as e:
+            logger.error(f"Error parsing cached keywords for {url}: {e}")
+    return None
+
+def save_cached_keywords_for_article(url: str, keywords: List[str]):
+    """Save keywords for a given article URL to SQLite database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    keywords_json = json.dumps(keywords)
+    cursor.execute(
+        "INSERT OR REPLACE INTO article_keywords (url, keywords) VALUES (?, ?)",
+        (url.strip(), keywords_json)
+    )
+    conn.commit()
+    conn.close()
+
+def get_all_aggregated_keywords() -> List[str]:
+    """Retrieve all unique keywords from the article_keywords cache table."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT keywords FROM article_keywords")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    unique_kws = set()
+    for row in rows:
+        try:
+            kws = json.loads(row[0])
+            for kw in kws:
+                cleaned = kw.strip()
+                if cleaned:
+                    unique_kws.add(cleaned)
+        except Exception:
+            pass
+    return sorted(list(unique_kws))
 
 def _get_url_hash(url: str) -> str:
     """Generate a SHA-256 hash for a given URL to use as index."""

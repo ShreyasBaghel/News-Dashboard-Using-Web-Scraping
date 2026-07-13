@@ -111,6 +111,13 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database and tables...")
     init_db()
     
+    logger.info("Validating Gemini API configuration...")
+    try:
+        from app.services.gemini_client import validate_gemini_config
+        await validate_gemini_config()
+    except Exception as e:
+        logger.error(f"Error during startup Gemini config validation: {e}")
+    
     logger.info("Ensuring fresh article pool on startup...")
     topics = [
         "Dalmia Cement",
@@ -159,19 +166,30 @@ app.add_middleware(
 
 @app.get("/api/keywords/suggest")
 async def suggest_keywords(q: str = Query("", description="Prefix search term for autocomplete suggestions")):
-    cached_list = get_cached_keywords()
+    from app.services.cache import get_all_aggregated_keywords
+    aggregated_list = get_all_aggregated_keywords()
+    
+    # If the list is empty or has very few items (e.g. startup), merge with old cached list
+    if len(aggregated_list) < 10:
+        fallback_kws = get_cached_keywords()
+        seen = set(aggregated_list)
+        for kw in fallback_kws:
+            if kw not in seen:
+                aggregated_list.append(kw)
+                seen.add(kw)
+                
     q_clean = q.lower().strip()
     
     if not q_clean:
-        return {"suggestions": cached_list}
+        return {"suggestions": aggregated_list}
         
-    # 1. Prefix match
-    prefix_matches = [kw for kw in cached_list if kw.startswith(q_clean)]
+    # 1. Prefix match (case-insensitive)
+    prefix_matches = [kw for kw in aggregated_list if kw.lower().startswith(q_clean)]
     
     # 2. Substring match fallback (if prefix matches are less than 5)
     if len(prefix_matches) < 5:
         seen = set(prefix_matches)
-        substring_matches = [kw for kw in cached_list if q_clean in kw and kw not in seen]
+        substring_matches = [kw for kw in aggregated_list if q_clean in kw.lower() and kw not in seen]
         matches = prefix_matches + substring_matches
     else:
         matches = prefix_matches

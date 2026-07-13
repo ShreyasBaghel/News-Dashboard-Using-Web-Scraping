@@ -231,6 +231,20 @@ async def process_and_validate_candidate(
             stats["scrape_failures"] += 1
             return None
             
+        # Keyword generation (AFTER scraping, BEFORE quality/source validation checks)
+        from app.services.keyword_service import generate_article_keywords
+        try:
+            art_keywords = await generate_article_keywords(
+                title=title,
+                description=desc,
+                content=scraped_text,
+                url=url,
+                client=client
+            )
+        except Exception as e:
+            logger.error(f"Error generating keywords for article '{title}': {e}")
+            art_keywords = ["Manufacturing", "Industrial Technology", "General"]
+            
         # 3. Post-scrape quality and source checks
         source_ok, source_reason = is_valid_source_type(url, title, scraped_text)
         if not source_ok:
@@ -298,7 +312,8 @@ async def process_and_validate_candidate(
             "keyword": keyword if not is_pinned else art.get("company"),
             "is_pinned": is_pinned,
             "company": art.get("company") if is_pinned else None,
-            "validation_relevance_score": score
+            "validation_relevance_score": score,
+            "keywords": art_keywords
         }
 
 def _generate_fallback_article(keyword: str, used_urls: set) -> Dict[str, Any]:
@@ -330,7 +345,8 @@ def _generate_fallback_article(keyword: str, used_urls: set) -> Dict[str, Any]:
         "keyword": keyword,
         "is_pinned": False,
         "company": None,
-        "validation_relevance_score": 80.0
+        "validation_relevance_score": 80.0,
+        "keywords": [keyword, "smart automation", "industry insights"]
     }
 
 async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = False) -> Dict[str, Any]:
@@ -393,13 +409,36 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
             expanded_keywords.append(kw_lower)
             
     # Filter pool for articles whose title/description contains any of the selected keywords (OR matching)
+    # OR if the article has cached keywords, check if any of them match the search keywords!
+    from app.services.cache import get_cached_keywords_for_article
     pool_candidates = []
     for art in pool_articles:
         title = art.get("title", "")
         desc = art.get("description", "") or ""
-        if any(has_whole_word_match(title, kw) or has_whole_word_match(desc, kw) for kw in expanded_keywords):
+        url = art.get("url", "")
+        
+        # Check if we have cached keywords for this URL
+        cached_kws = get_cached_keywords_for_article(url) if url else None
+        
+        match_found = False
+        if cached_kws:
+            # Check if any of the cached keywords match the selected keywords (case-insensitive)
+            for kw in expanded_keywords:
+                if any(kw == ck.lower().strip() or has_whole_word_match(ck, kw) for ck in cached_kws):
+                    match_found = True
+                    break
+        
+        # Fallback to title/desc match if no cached keywords matched or no cached keywords exist
+        if not match_found:
+            if any(has_whole_word_match(title, kw) or has_whole_word_match(desc, kw) for kw in expanded_keywords):
+                match_found = True
+                
+        if match_found:
             # Check language of candidate article metadata
             if is_english(art.get("title", ""), art.get("description", "") or ""):
+                # Pre-populate article with cached keywords if they exist
+                if cached_kws:
+                    art["keywords"] = cached_kws
                 pool_candidates.append(art)
             else:
                 logger.info(f"Skipping pool candidate '{art.get('title')}' because metadata is detected as non-English.")
@@ -721,28 +760,26 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     logger.info("Enriching final pinned articles with LLM intelligence...")
     summarized_pinned = await enrich_articles_with_llm(summarized_pinned)
     
-    # Calculate keyword counts for all cached keywords using synonyms and whole-word matching
-    cached_keywords = get_cached_keywords()
+    # Calculate keyword counts by aggregating keywords from all currently available articles
     keyword_counts = {}
-    if cached_keywords:
-        pool_articles_full = load_pool_from_disk()
-        all_source_arts = pool_articles_full + raw_pinned
-        for kw in cached_keywords:
-            kw_lower = kw.lower().strip()
-            
-            expanded_keywords = []
-            if kw_lower in SYNONYMS_EXPANSION:
-                expanded_keywords.extend(SYNONYMS_EXPANSION[kw_lower])
-            else:
-                expanded_keywords.append(kw_lower)
+    all_current_articles = summarized_articles + summarized_pinned
+    for art in all_current_articles:
+        kws = art.get("keywords") or []
+        for kw in kws:
+            kw_cleaned = kw.strip()
+            if kw_cleaned:
+                # Format keyword casing for display
+                display_kw = kw_cleaned
+                if display_kw.islower():
+                    if display_kw == "ai":
+                        display_kw = "AI"
+                    else:
+                        display_kw = display_kw.title()
+                keyword_counts[display_kw] = keyword_counts.get(display_kw, 0) + 1
                 
-            cnt = 0
-            for art in all_source_arts:
-                title = art.get("title", "")
-                desc = art.get("description", "") or ""
-                if any(has_whole_word_match(title, k) or has_whole_word_match(desc, k) for k in expanded_keywords):
-                    cnt += 1
-            keyword_counts[kw] = cnt
+    # Sort keyword counts by frequency descending, then alphabetically
+    sorted_kws = sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0].lower()))
+    keyword_counts = {kw: cnt for kw, cnt in sorted_kws}
 
     payload = {
         "keyword": keyword or "Default Dashboard",

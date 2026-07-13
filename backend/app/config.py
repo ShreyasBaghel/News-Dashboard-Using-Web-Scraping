@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     
     # API Keys from the plan
     GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-3.5-flash"
     NEWSAPI_KEY: str = ""
     GNEWS_KEY: str = ""
     MEDIASTACK_KEY: str = ""

@@ -180,7 +180,8 @@ async def validate_relevance(
 ) -> Tuple[bool, float, str]:
     """
     Calculates industry relevance score. Rejects non-relevant articles.
-    Tries Gemini Flash first, falls back to Ollama, then rule-based heuristics.
+    Uses Phi-3 Mini (Ollama) as the primary and only semantic validator,
+    falling back to rule-based heuristics on error.
     """
     cache_key = (url, title, keyword)
     cached_res = _relevance_cache.get(cache_key)
@@ -202,83 +203,26 @@ async def validate_relevance(
             _relevance_cache.set(cache_key, res)
             return res
 
-    # 1. Primary: Gemini 1.5 Flash
-    if settings.GEMINI_API_KEY:
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
-        
-        system_prompt = (
-            "You are an expert industry and manufacturing news analyst. "
-            "Evaluate if the provided article is genuinely relevant to the selected topic.\n"
-            "You MUST return your output in JSON format with these exact keys:\n"
-            "{\n"
-            '  "is_relevant": <bool>,\n'
-            '  "relevance_score": <int, 0 to 100>,\n'
-            '  "primary_topic": "<string describing primary topic>",\n'
-            '  "reason": "<brief justification>"\n'
-            "}\n"
-        )
-        
-        user_prompt = (
-            f"Topic/Industry: {topic}\n"
-            f"Article Title: {title}\n"
-            f"Article Description: {description}\n"
-            f"Article URL: {url}\n"
-            f"Scraped Paragraphs: {content[:1500]}\n\n"
-            "Strict Evaluation Guidelines:\n"
-            "1. Reject (is_relevant=false, score < 60) if the primary subject of the article is NOT the selected Topic/Industry.\n"
-            "2. Reject if the Topic/Industry is only mentioned in passing (e.g. a general tech article that mentions manufacturing in one sentence). The selected industry must be the core subject.\n"
-            "3. Reject blacklisted domains/categories: entertainment, video games (e.g. Spider-Man PS5), movies, celebrity news, sports, music, software package/library releases, generic programming tools/libraries (e.g., PyPI/NPM updates), and general AI news (e.g. new GPT model release, ChatGPT tips, LLM prompts) UNLESS that AI news is directly and specifically about industrial automation, smart factories, robotics, manufacturing lines, cement kilns, production, or supply chain logistics.\n"
-            "4. Reject generic macro-finance, general jobs reports, or stock market updates unless they are heavily focused on manufacturing/production statistics.\n"
-            "5. If relevant, set is_relevant=true and score >= 60. Give higher scores (80-100) to articles where the selected industry is the direct focal point."
-        )
-
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": f"System Prompt:\n{system_prompt}\n\nUser Input:\n{user_prompt}"}]
-                }
-            ],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "temperature": 0.1
-            }
-        }
-        
-        try:
-            timeout_cfg = httpx.Timeout(connect=3.0, read=8.0, write=3.0, pool=5.0)
-            if client is not None:
-                response = await client.post(gemini_url, json=payload, timeout=timeout_cfg)
-            else:
-                async with httpx.AsyncClient(timeout=timeout_cfg) as local_client:
-                    response = await local_client.post(gemini_url, json=payload)
-            if response.status_code == 200:
-                res_data = response.json()
-                res_text = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                parsed = json.loads(res_text)
-                is_relevant = bool(parsed.get("is_relevant", False))
-                score = float(parsed.get("relevance_score", 0))
-                reason = str(parsed.get("reason", "No reason provided"))
-                
-                logger.info(f"Gemini Relevance for '{title}': Relevant={is_relevant}, Score={score}, Reason={reason}")
-                res = (is_relevant, score, reason)
-                _relevance_cache.set(cache_key, res)
-                return res
-            else:
-                logger.warning(f"Gemini API returned status {response.status_code} during relevance validation. Trying Ollama fallback.")
-        except Exception as e:
-            logger.warning(f"Gemini Relevance API call failed: {str(e)}. Trying Ollama fallback.")
-
-    # 2. Secondary: Ollama Fallback
+    # 1. Primary: Ollama Semantic Validation
     try:
         ollama_payload = {
             "model": settings.OLLAMA_MODEL,
             "prompt": (
-                f"Identify if the following article is relevant to the industry '{topic}'. "
-                f"Title: {title}. Description: {description}. URL: {url}. Content: {content[:1000]}.\n"
-                f"Do not include explanation. Return ONLY a JSON object: "
-                f"{{\"is_relevant\": true/false, \"relevance_score\": 0-100, \"reason\": \"string\"}} "
-                f"Make sure to reject entertainment, sports, software libraries, and general AI announcements."
+                f"You are an expert industry and manufacturing news analyst. "
+                f"Evaluate if the provided article is genuinely relevant to the selected topic.\n"
+                f"Topic/Industry: {topic}\n"
+                f"Article Title: {title}\n"
+                f"Article Description: {description}\n"
+                f"Article URL: {url}\n"
+                f"Scraped Paragraphs: {content[:1000]}\n\n"
+                f"Strict Evaluation Guidelines:\n"
+                f"1. Reject (is_relevant=false, score < 60) if the primary subject of the article is NOT the selected Topic/Industry.\n"
+                f"2. Reject if the Topic/Industry is only mentioned in passing (e.g. a general tech article that mentions manufacturing in one sentence). The selected industry must be the core subject.\n"
+                f"3. Reject blacklisted domains/categories: entertainment, video games (e.g. Spider-Man PS5), movies, celebrity news, sports, music, software package/library releases, generic programming tools/libraries (e.g., PyPI/NPM updates), and general AI news (e.g. new GPT model release, ChatGPT tips, LLM prompts) UNLESS that AI news is directly and specifically about industrial automation, smart factories, robotics, manufacturing lines, cement kilns, production, or supply chain logistics.\n"
+                f"4. Reject generic macro-finance, general jobs reports, or stock market updates unless they are heavily focused on manufacturing/production statistics.\n"
+                f"5. If relevant, set is_relevant=true and score >= 60. Give higher scores (80-100) to articles where the selected industry is the direct focal point.\n"
+                f"Return ONLY a JSON object: "
+                f"{{\"is_relevant\": true/false, \"relevance_score\": 0-100, \"reason\": \"string\"}}"
             ),
             "format": "json",
             "stream": False,
@@ -296,16 +240,18 @@ async def validate_relevance(
             parsed = json.loads(raw_response)
             is_relevant = bool(parsed.get("is_relevant", False))
             score = float(parsed.get("relevance_score", 0))
-            reason = str(parsed.get("reason", "Ollama fallback"))
+            reason = str(parsed.get("reason", "Ollama validation"))
             
             logger.info(f"Ollama Relevance for '{title}': Relevant={is_relevant}, Score={score}, Reason={reason}")
             res = (is_relevant, score, reason)
             _relevance_cache.set(cache_key, res)
             return res
+        else:
+            logger.warning(f"Ollama API returned status {response.status_code} during relevance validation. Trying rule-based fallback.")
     except Exception as e:
         logger.warning(f"Ollama Relevance check failed: {str(e)}. Using rule-based fallback.")
 
-    # 3. Last Resort: Rule-Based Fallback (Keyword Matching)
+    # 2. Secondary: Rule-Based Fallback (Keyword Matching)
     # Check if the title or description contains high-priority industry keywords
     priority_keywords = [
         "manufacturing", "cement", "factory", "automation", "robotics", "kiln",
@@ -327,6 +273,7 @@ async def validate_relevance(
     res = (is_relevant, score, reason)
     _relevance_cache.set(cache_key, res)
     return res
+
 
 
 def validate_summary_quality(summary: str, title: str) -> bool:

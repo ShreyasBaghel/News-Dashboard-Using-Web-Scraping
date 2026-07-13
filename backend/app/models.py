@@ -13,6 +13,7 @@ class Article(BaseModel):
     company: Optional[str] = None  # NVIDIA, Microsoft, OpenAI for pinned articles
     relevance_score: Optional[float] = 0.0
     canonical_url: Optional[str] = None
+    keywords: List[str] = []
     
     # LLM Intelligence enrichment fields
     executive_summary: Optional[str] = None
