@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -130,6 +130,8 @@ async def lifespan(app: FastAPI):
     try:
         await ensure_fresh_pool_on_startup(topics)
         load_keywords_cache()
+        from app.services.cache import build_in_memory_index
+        build_in_memory_index()
     except Exception as e:
         logger.error(f"Failed to ensure fresh pool on startup: {str(e)}")
     
@@ -196,24 +198,58 @@ async def suggest_keywords(q: str = Query("", description="Prefix search term fo
         
     return {"suggestions": matches[:10]}
 
+import datetime
+
+def get_news_from_cache_or_default(keyword: Optional[str]) -> dict:
+    from app.services.cache import search_cache_by_keyword, get_global_keyword_counts, get_cached_results
+    keyword_clean = keyword.strip() if keyword else ""
+    if keyword_clean:
+        matching = search_cache_by_keyword(keyword_clean)
+        global_kws = get_global_keyword_counts()
+        return {
+            "keyword": keyword_clean,
+            "articles": matching,
+            "pinned_articles": [],
+            "last_updated": datetime.datetime.utcnow().isoformat().replace("+00:00", "Z"),
+            "next_update": (datetime.datetime.utcnow() + datetime.timedelta(hours=12)).isoformat().replace("+00:00", "Z"),
+            "keyword_counts": global_kws
+        }
+    else:
+        cached = get_cached_results("default_dashboard")
+        if cached:
+            cached["keyword_counts"] = get_global_keyword_counts()
+            return cached
+        
+        # Fallback if SQLite cache is empty
+        matching = search_cache_by_keyword(None)
+        global_kws = get_global_keyword_counts()
+        return {
+            "keyword": "Default Dashboard",
+            "articles": matching,
+            "pinned_articles": [],
+            "last_updated": datetime.datetime.utcnow().isoformat().replace("+00:00", "Z"),
+            "next_update": (datetime.datetime.utcnow() + datetime.timedelta(hours=12)).isoformat().replace("+00:00", "Z"),
+            "keyword_counts": global_kws
+        }
+
 @app.get("/api/news", response_model=DashboardPayload)
 async def get_news(keyword: str = Query(None, description="Search keyword or topic")):
     """
-    Retrieve dashboard payload (summarized feed + pinned technology sector news).
-    Tries to hit SQLite cache first.
+    Retrieve news payload instantly from cache, avoiding live scraping and LLM invocation.
     """
     try:
-        payload = await run_pipeline(keyword=keyword, force_refresh=False)
+        payload = get_news_from_cache_or_default(keyword)
         return overlay_pinned_articles(payload)
     except Exception as e:
         logger.error(f"Error in GET /api/news: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Cache retrieval error: {str(e)}")
 
 @app.post("/api/news/refresh", response_model=DashboardPayload)
-async def refresh_news(request: RefreshRequest):
+async def refresh_news(request: RefreshRequest, x_user_role: Optional[str] = Header(None)):
     """
-    Force execute pipeline execution for keyword, bypassing/updating SQLite caches.
+    Force manual execution of the pipeline (Admin only).
     """
+    await verify_admin_role(x_user_role)
     try:
         payload = await run_pipeline(keyword=request.keyword, force_refresh=True)
         return overlay_pinned_articles(payload)
@@ -228,7 +264,7 @@ async def pin_article_endpoint(request: PinRequest):
     """
     try:
         pin_article(request.article.dict())
-        payload = await run_pipeline(keyword=request.keyword, force_refresh=False)
+        payload = get_news_from_cache_or_default(request.keyword)
         return overlay_pinned_articles(payload)
     except Exception as e:
         logger.error(f"Error in POST /api/news/pin: {str(e)}")
@@ -241,11 +277,97 @@ async def unpin_article_endpoint(request: UnpinRequest):
     """
     try:
         unpin_article(request.url)
-        payload = await run_pipeline(keyword=request.keyword, force_refresh=False)
+        payload = get_news_from_cache_or_default(request.keyword)
         return overlay_pinned_articles(payload)
     except Exception as e:
         logger.error(f"Error in POST /api/news/unpin: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Unpin error: {str(e)}")
+
+# --- ROLE-BASED AUTHENTICATION & ADMIN DASHBOARD ENDPOINTS ---
+async def verify_admin_role(x_user_role: Optional[str] = Header(None)):
+    if not x_user_role or x_user_role.lower() != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden: Admin access required.")
+
+class AddKeywordRequest(BaseModel):
+    keyword: str
+
+@app.get("/api/admin/keywords")
+async def get_monitored_keywords_endpoint(x_user_role: Optional[str] = Header(None)):
+    await verify_admin_role(x_user_role)
+    from app.services.monitored_keywords import load_monitored_keywords
+    return {"keywords": load_monitored_keywords()}
+
+@app.post("/api/admin/keywords")
+async def add_monitored_keyword_endpoint(
+    request: AddKeywordRequest,
+    background_tasks: BackgroundTasks,
+    x_user_role: Optional[str] = Header(None)
+):
+    await verify_admin_role(x_user_role)
+    from app.services.monitored_keywords import load_monitored_keywords, save_monitored_keywords
+    
+    keyword_to_add = request.keyword.strip()
+    if not keyword_to_add:
+        raise HTTPException(status_code=400, detail="Keyword cannot be empty.")
+        
+    keywords = load_monitored_keywords()
+    if keyword_to_add.lower() in [k.lower() for k in keywords]:
+        return {"message": f"Keyword '{keyword_to_add}' is already monitored.", "keywords": keywords}
+        
+    keywords.append(keyword_to_add)
+    save_monitored_keywords(keywords)
+    
+    # Spawn pipeline run specifically for the new keyword in the background
+    background_tasks.add_task(run_pipeline_in_background, keyword=keyword_to_add)
+    
+    return {
+        "message": f"Keyword '{keyword_to_add}' added successfully. Scraping pipeline started.",
+        "keywords": keywords
+    }
+
+@app.delete("/api/admin/keywords")
+async def delete_monitored_keyword_endpoint(
+    keyword: str = Query(..., description="Keyword to remove"),
+    x_user_role: Optional[str] = Header(None)
+):
+    await verify_admin_role(x_user_role)
+    from app.services.monitored_keywords import load_monitored_keywords, save_monitored_keywords
+    
+    keyword_to_remove = keyword.strip()
+    keywords = load_monitored_keywords()
+    
+    updated_kws = [k for k in keywords if k.lower() != keyword_to_remove.lower()]
+    if len(updated_kws) == len(keywords):
+        raise HTTPException(status_code=404, detail=f"Keyword '{keyword_to_remove}' not found in monitored list.")
+        
+    save_monitored_keywords(updated_kws)
+    return {"message": f"Keyword '{keyword_to_remove}' removed successfully.", "keywords": updated_kws}
+
+@app.post("/api/admin/pipeline/run")
+async def run_pipeline_endpoint(
+    background_tasks: BackgroundTasks,
+    x_user_role: Optional[str] = Header(None)
+):
+    await verify_admin_role(x_user_role)
+    from app.pipeline import pipeline_status
+    if pipeline_status["status"] == "running":
+        return {"message": "Pipeline is already running.", "status": pipeline_status}
+        
+    background_tasks.add_task(run_pipeline_in_background, keyword=None)
+    return {"message": "Pipeline run started in background.", "status": pipeline_status}
+
+@app.get("/api/admin/pipeline/status")
+async def get_pipeline_status_endpoint(x_user_role: Optional[str] = Header(None)):
+    await verify_admin_role(x_user_role)
+    from app.pipeline import pipeline_status
+    return {"status": pipeline_status}
+
+async def run_pipeline_in_background(keyword: Optional[str] = None):
+    from app.pipeline import pipeline_status, run_pipeline
+    try:
+        await run_pipeline(keyword=keyword, force_refresh=True)
+    except Exception as e:
+        logger.error(f"Background pipeline execution failed: {e}")
 
 if __name__ == "__main__":
     import uvicorn

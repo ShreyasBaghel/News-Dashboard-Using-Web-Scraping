@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { RefreshCw, Clock } from 'lucide-react';
 
-export default function RefreshTimer({ nextUpdate, onManualRefresh, isLoading }) {
+export default function RefreshTimer({ nextUpdate, onManualRefresh, isLoading, userRole = 'employee' }) {
   const [timeLeft, setTimeLeft] = useState('');
 
   useEffect(() => {
@@ -57,47 +57,49 @@ export default function RefreshTimer({ nextUpdate, onManualRefresh, isLoading })
         </span>
       </div>
       
-      <button
-        onClick={onManualRefresh}
-        disabled={isLoading}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.5rem',
-          background: 'var(--bg-surface)',
-          border: '1px solid var(--border-color)',
-          color: 'var(--text-primary)',
-          padding: '0.4rem 1rem',
-          borderRadius: '100px',
-          cursor: 'pointer',
-          fontFamily: 'var(--font-title)',
-          fontSize: '0.8rem',
-          fontWeight: 600,
-          transition: 'var(--transition-bounce)',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background = 'var(--bg-surface-hover)';
-          e.currentTarget.style.borderColor = 'var(--color-primary)';
-          e.currentTarget.style.color = 'var(--color-primary)';
-          e.currentTarget.style.transform = 'translateY(-1px)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = 'var(--bg-surface)';
-          e.currentTarget.style.borderColor = 'var(--border-color)';
-          e.currentTarget.style.color = 'var(--text-primary)';
-          e.currentTarget.style.transform = 'translateY(0)';
-        }}
-      >
-        <RefreshCw 
-          size={14} 
-          className={isLoading ? 'spinning' : ''} 
-          style={{ 
-            animation: isLoading ? 'spin 1.2s linear infinite' : 'none',
-            color: 'var(--color-primary)' 
-          }} 
-        />
-        {isLoading ? 'Synchronizing...' : 'Force Refresh Pipeline'}
-      </button>
+      {userRole === 'admin' && (
+        <button
+          onClick={onManualRefresh}
+          disabled={isLoading}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-color)',
+            color: 'var(--text-primary)',
+            padding: '0.4rem 1rem',
+            borderRadius: '100px',
+            cursor: 'pointer',
+            fontFamily: 'var(--font-title)',
+            fontSize: '0.8rem',
+            fontWeight: 600,
+            transition: 'var(--transition-bounce)',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'var(--bg-surface-hover)';
+            e.currentTarget.style.borderColor = 'var(--color-primary)';
+            e.currentTarget.style.color = 'var(--color-primary)';
+            e.currentTarget.style.transform = 'translateY(-1px)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'var(--bg-surface)';
+            e.currentTarget.style.borderColor = 'var(--border-color)';
+            e.currentTarget.style.color = 'var(--text-primary)';
+            e.currentTarget.style.transform = 'translateY(0)';
+          }}
+        >
+          <RefreshCw 
+            size={14} 
+            className={isLoading ? 'spinning' : ''} 
+            style={{ 
+              animation: isLoading ? 'spin 1.2s linear infinite' : 'none',
+              color: 'var(--color-primary)' 
+            }} 
+          />
+          {isLoading ? 'Synchronizing...' : 'Force Refresh Pipeline'}
+        </button>
+      )}
 
       <style>{`
         @keyframes spin {

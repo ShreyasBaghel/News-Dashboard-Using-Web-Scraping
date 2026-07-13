@@ -1,49 +1,38 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, X, Tag, Factory, Leaf, Lightbulb, Cpu, Briefcase } from 'lucide-react';
+import { Search, X, Tag } from 'lucide-react';
 
-const POPULAR_SUGGESTIONS = [
-  { label: 'cement', icon: Leaf },
-  { label: 'decarbonization', icon: Leaf },
-  { label: 'automation', icon: Cpu },
-  { label: 'ai', icon: Lightbulb },
-  { label: 'robotics', icon: Lightbulb },
-  { label: 'manufacturing', icon: Factory }
-];
+const API_BASE_URL = 
+  (import.meta.env && (import.meta.env.VITE_API_URL || import.meta.env.REACT_APP_API_URL)) || 
+  'http://localhost:8000/api';
 
 export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chips = [], setChips }) {
   const [inputValue, setInputValue] = useState('');
-  const [suggestions, setSuggestions] = useState([]);
-  const [showDropdown, setShowDropdown] = useState(false);
-  const dropdownRef = useRef(null);
+  const [allTags, setAllTags] = useState([]);
+  const [showPopup, setShowPopup] = useState(false);
+  const popupRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Debounced suggestion fetching
+  // Fetch all keywords for the grid on focus / startup
   useEffect(() => {
-    const fetchSuggestions = async () => {
+    const fetchAllTags = async () => {
       try {
-        const query = encodeURIComponent(inputValue.trim().toLowerCase());
-        const response = await fetch(`http://localhost:8000/api/keywords/suggest?q=${query}`);
+        const response = await fetch(`${API_BASE_URL}/keywords/suggest?q=`);
         if (response.ok) {
           const data = await response.json();
-          // Filter out keywords that are already in chips
-          const filtered = (data.suggestions || []).filter(item => !chips.includes(item));
-          setSuggestions(filtered);
+          setAllTags(data.suggestions || []);
         }
       } catch (err) {
-        console.error('Error fetching suggestions:', err);
+        console.error('Error fetching keyword suggestions:', err);
       }
     };
+    fetchAllTags();
+  }, [chips]);
 
-    const delayDebounce = setTimeout(fetchSuggestions, 250);
-
-    return () => clearTimeout(delayDebounce);
-  }, [inputValue, chips]);
-
-  // Handle click outside to close suggestions dropdown
+  // Handle click outside to close the searchable tag popup
   useEffect(() => {
     const handleClickOutside = (e) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setShowDropdown(false);
+      if (popupRef.current && !popupRef.current.contains(e.target)) {
+        setShowPopup(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -51,16 +40,13 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
   }, []);
 
   const handleSelectKeyword = (keyword) => {
-    const kw = keyword.toLowerCase().trim();
-    if (kw && !chips.includes(kw)) {
-      setChips([...chips, kw]);
+    const kw = keyword.trim();
+    if (kw) {
+      setChips([kw]);
+      onSearch(kw);
     }
     setInputValue('');
-    setSuggestions([]);
-    setShowDropdown(false);
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
+    setShowPopup(false);
   };
 
   const handleRemoveChip = (chipToRemove) => {
@@ -71,31 +57,28 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
     }
   };
 
-  const handleSubmit = (e) => {
-    if (e) e.preventDefault();
-    if (chips.length > 0) {
-      // Send comma-separated list of chips to the onSearch handler
-      onSearch(chips.join(','));
-    }
-  };
-
   const handleClearAll = () => {
     setChips([]);
     setInputValue('');
-    setSuggestions([]);
-    setShowDropdown(false);
+    setShowPopup(false);
     onClear();
   };
 
+  // Filter tags in real-time as user types
+  const filteredTags = allTags.filter(tag => 
+    tag.toLowerCase().includes(inputValue.toLowerCase().strip ? inputValue.toLowerCase().strip() : inputValue.toLowerCase())
+  );
+
   return (
-    <div className="search-bar-wrapper animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', position: 'relative' }}>
+    <div className="search-bar-wrapper animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%', position: 'relative' }}>
       
       {/* Search Input Box */}
-      <form onSubmit={handleSubmit} style={{ width: '100%' }}>
+      <div style={{ width: '100%' }}>
         <div 
           className="glass-panel" 
           onClick={() => {
             if (inputRef.current) inputRef.current.focus();
+            setShowPopup(true);
           }}
           style={{
             display: 'flex',
@@ -131,7 +114,6 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
                 borderRadius: '100px',
                 fontSize: '0.8rem',
                 fontWeight: 600,
-                animation: 'fadeInUp 0.3s ease'
               }}
             >
               <Tag size={10} style={{ color: 'var(--color-primary)' }} />
@@ -152,8 +134,6 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
                   padding: '0.1rem',
                   borderRadius: '50%',
                 }}
-                onMouseEnter={(e) => e.currentTarget.style.color = 'var(--color-accent)'}
-                onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-secondary)'}
               >
                 <X size={10} />
               </button>
@@ -167,18 +147,10 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
             value={inputValue}
             onChange={(e) => {
               setInputValue(e.target.value);
-              setShowDropdown(true);
+              setShowPopup(true);
             }}
-            onFocus={() => setShowDropdown(true)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                if (suggestions.length > 0) {
-                  handleSelectKeyword(suggestions[0]);
-                }
-              }
-            }}
-            placeholder={chips.length === 0 ? "Type to search keywords (e.g. cement, robotics, ai...)" : "Add more keywords..."}
+            onFocus={() => setShowPopup(true)}
+            placeholder={chips.length === 0 ? "Click to search tags or type to filter..." : "Add search filters..."}
             disabled={isLoading}
             style={{
               flexGrow: 1,
@@ -214,165 +186,69 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
                 borderRadius: '50%',
                 transition: 'var(--transition-smooth)',
               }}
-              onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
-              onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-secondary)'}
             >
               <X size={18} />
             </button>
           )}
+        </div>
+      </div>
 
-          {/* Search trigger button */}
-          <button
-            type="submit"
-            disabled={isLoading || chips.length === 0}
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: 'var(--gradient-tech)',
-              border: 'none',
-              color: '#ffffff',
-              padding: '0.6rem 1.5rem',
-              borderRadius: '100px',
-              fontWeight: 600,
-              fontSize: '0.9rem',
-              fontFamily: 'var(--font-title)',
-              cursor: 'pointer',
-              boxShadow: '0 4px 12px var(--glow-primary)',
-              transition: 'var(--transition-bounce)',
-              opacity: (isLoading || chips.length === 0) ? 0.5 : 1,
-              pointerEvents: (isLoading || chips.length === 0) ? 'none' : 'auto',
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.03)'}
-            onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
-          >
-            Search
-          </button>
-
-          {/* Floating Dropdown for Autocomplete suggestions */}
-          {showDropdown && (inputValue.trim() !== "" || suggestions.length > 0) && (
-            <div 
-              ref={dropdownRef}
-              className="glass-panel"
-              onClick={(e) => e.stopPropagation()}
+      {/* SEARCH POPUP (3-Column Grid) */}
+      {showPopup && (
+        <div 
+          ref={popupRef}
+          className="glass-panel tags-search-popup animate-fade-in"
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: 0,
+            right: 0,
+            marginTop: '0.5rem',
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-color)',
+            zIndex: 9999,
+          }}
+        >
+          {/* Inner Search Box */}
+          <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem', marginBottom: '1rem' }}>
+            <Search size={16} style={{ color: 'var(--text-muted)', marginRight: '0.5rem' }} />
+            <input 
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Search keywords..."
               style={{
-                position: 'absolute',
-                top: '100%',
-                left: 0,
-                right: 0,
-                marginTop: '0.5rem',
-                borderRadius: 'var(--radius-md)',
-                border: '1px solid var(--border-color)',
-                background: 'var(--bg-surface)',
-                boxShadow: '0 10px 25px rgba(0,0,0,0.15)',
-                zIndex: 9999,
-                maxHeight: '250px',
-                overflowY: 'auto',
-                padding: '0.5rem 0'
+                border: 'none',
+                background: 'none',
+                outline: 'none',
+                width: '100%',
+                color: 'var(--text-primary)',
+                fontSize: '0.95rem'
               }}
-            >
-              {suggestions.length > 0 ? (
-                suggestions.map((item, idx) => (
-                  <div 
-                    key={idx}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSelectKeyword(item);
-                    }}
-                    style={{
-                      padding: '0.6rem 1.25rem',
-                      cursor: 'pointer',
-                      fontSize: '0.95rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.5rem',
-                      color: 'var(--text-primary)',
-                      transition: 'background 0.2s ease',
-                      fontFamily: 'var(--font-body)'
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'var(--bg-surface-hover)';
-                      e.currentTarget.style.color = 'var(--color-primary)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                      e.currentTarget.style.color = 'var(--text-primary)';
-                    }}
-                  >
-                    <Search size={14} style={{ color: 'var(--text-muted)' }} />
-                    <span>{item}</span>
-                  </div>
-                ))
-              ) : (
+            />
+          </div>
+
+          {/* 3-Column CSS Grid list */}
+          {filteredTags.length > 0 ? (
+            <div className="tags-grid">
+              {filteredTags.map((item, idx) => (
                 <div 
-                  style={{
-                    padding: '1rem 1.25rem',
-                    fontSize: '0.9rem',
-                    color: 'var(--text-muted)',
-                    textAlign: 'center',
-                    fontStyle: 'italic',
-                    fontFamily: 'var(--font-body)'
-                  }}
+                  key={idx}
+                  onClick={() => handleSelectKeyword(item)}
+                  className="tag-item"
                 >
-                  No matching keywords found
+                  <span>{item}</span>
+                  <Tag size={12} style={{ color: 'var(--color-secondary)' }} />
                 </div>
-              )}
+              ))}
+            </div>
+          ) : (
+            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+              No matching keywords found in the cache.
             </div>
           )}
         </div>
-      </form>
-      
-      {/* Suggestions tags */}
-      <div 
-        style={{ 
-          display: 'flex', 
-          flexWrap: 'wrap', 
-          gap: '0.5rem', 
-          alignItems: 'center',
-          fontSize: '0.85rem',
-          color: 'var(--text-secondary)' 
-        }}
-      >
-        <span>Popular suggestions:</span>
-        {POPULAR_SUGGESTIONS.map((item, idx) => {
-          const Icon = item.icon;
-          const isSelected = chips.includes(item.label);
-          return (
-            <button
-              key={idx}
-              type="button"
-              onClick={() => handleSelectKeyword(item.label)}
-              disabled={isLoading || isSelected}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.35rem',
-                background: 'var(--bg-surface)',
-                border: '1px solid var(--border-color)',
-                borderRadius: '100px',
-                padding: '0.3rem 0.8rem',
-                color: 'var(--text-secondary)',
-                cursor: 'pointer',
-                transition: 'var(--transition-smooth)',
-                fontFamily: 'var(--font-body)',
-                opacity: isSelected ? 0.5 : 1,
-                pointerEvents: isSelected ? 'none' : 'auto'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'var(--bg-surface-hover)';
-                e.currentTarget.style.borderColor = 'var(--color-primary)';
-                e.currentTarget.style.color = 'var(--color-primary)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'var(--bg-surface)';
-                e.currentTarget.style.borderColor = 'var(--border-color)';
-                e.currentTarget.style.color = 'var(--text-secondary)';
-              }}
-            >
-              <Icon size={12} style={{ color: 'var(--color-primary)' }} />
-              {item.label}
-            </button>
-          );
-        })}
-      </div>
+      )}
     </div>
   );
 }

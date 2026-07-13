@@ -60,6 +60,10 @@ _seen_urls_dirty: bool = False
 seen_url_hits: int = 0
 seen_url_misses: int = 0
 
+# In-memory index structures
+_in_memory_keyword_index: Dict[str, List[Dict[str, Any]]] = {}
+_all_cached_articles: List[Dict[str, Any]] = []
+
 def get_db_connection():
     conn = sqlite3.connect(settings.DATABASE_PATH)
     conn.row_factory = sqlite3.Row
@@ -288,6 +292,35 @@ def add_seen_url(url: str):
         }
         _save_seen_articles(data)
 
+def cache_article(article: Dict[str, Any]):
+    """Save/update the full article metadata in the cache.json store."""
+    url = article.get("url")
+    if not url:
+        return
+    url_hash = _get_url_hash(url)
+    data = _load_seen_articles()
+    
+    # Preserve original added_at timestamp if present
+    added_at = data.get(url_hash, {}).get("added_at") or datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    
+    data[url_hash] = {
+        "url": url.strip(),
+        "added_at": added_at,
+        "title": article.get("title") or "",
+        "summary": article.get("summary") or "",
+        "keywords": article.get("keywords") or [],
+        # Store metadata for full object reconstruction
+        "source": article.get("source") or "Unknown",
+        "published_at": article.get("published_at") or "",
+        "is_pinned": article.get("is_pinned", False),
+        "relevance_score": article.get("relevance_score") or 0.0,
+        "company": article.get("company"),
+        "scraped_content": article.get("scraped_content") or "",
+        "validation_relevance_score": article.get("validation_relevance_score") or 0.0,
+        "llm_insights": article.get("llm_insights")
+    }
+    _save_seen_articles(data)
+
 def get_seen_url_cache_stats() -> Tuple[int, int]:
     """Return seen URL cache hits and misses."""
     global seen_url_hits, seen_url_misses
@@ -384,10 +417,8 @@ def purge_older_than(days: int = None):
 
 # Layered Deduplication Helper Functions
 import re
-import hashlib
 from difflib import SequenceMatcher
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
-from typing import List, Dict, Any
 
 def normalize_url(url: str) -> str:
     if not url:
@@ -546,3 +577,92 @@ def is_duplicate_of_any(art: Dict[str, Any], list_of_arts: List[Dict[str, Any]])
             
     return False
 
+# In-Memory Keyword Search Index Implementations
+def build_in_memory_index():
+    global _in_memory_keyword_index, _all_cached_articles
+    logger.info("Building in-memory keyword index from cache.json...")
+    try:
+        articles_data = _load_seen_articles()
+        
+        articles = []
+        for entry in articles_data.values():
+            if isinstance(entry, dict) and "title" in entry:
+                articles.append(entry)
+                
+        # Sort by date (newest first)
+        articles.sort(key=lambda x: x.get("published_at") or x.get("added_at") or "", reverse=True)
+        _all_cached_articles = articles
+        
+        new_index = {}
+        for art in articles:
+            keywords = art.get("keywords") or []
+            for kw in keywords:
+                kw_clean = kw.strip().lower()
+                if kw_clean:
+                    if kw_clean not in new_index:
+                        new_index[kw_clean] = []
+                    if art not in new_index[kw_clean]:
+                        new_index[kw_clean].append(art)
+                        
+        _in_memory_keyword_index = new_index
+        logger.info(f"In-memory index successfully built: {len(_all_cached_articles)} articles, {len(_in_memory_keyword_index)} unique keywords.")
+    except Exception as e:
+        logger.error(f"Failed to build in-memory keyword index: {e}")
+
+def get_global_keyword_counts() -> Dict[str, int]:
+    """Aggregate keywords from all articles in cache.json."""
+    counts = {}
+    try:
+        articles_data = _load_seen_articles()
+        for entry in articles_data.values():
+            if isinstance(entry, dict) and "title" in entry:
+                kws = entry.get("keywords") or []
+                for kw in kws:
+                    kw_clean = kw.strip()
+                    if kw_clean:
+                        display_kw = kw_clean
+                        if display_kw.islower():
+                            if display_kw == "ai":
+                                display_kw = "AI"
+                            else:
+                                display_kw = display_kw.title()
+                        counts[display_kw] = counts.get(display_kw, 0) + 1
+    except Exception as e:
+        logger.error(f"Error gathering global keyword counts: {e}")
+        
+    # Sort them by frequency descending, then alphabetically
+    sorted_kws = sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))
+    return {kw: cnt for kw, cnt in sorted_kws}
+
+def search_cache_by_keyword(keyword: str) -> List[Dict[str, Any]]:
+    """Instant search using in-memory index or fallback string matching."""
+    if not keyword:
+        return _all_cached_articles
+        
+    kw_lower = keyword.lower().strip()
+    
+    # 1. Try exact keyword match
+    if kw_lower in _in_memory_keyword_index:
+        return _in_memory_keyword_index[kw_lower]
+        
+    # 2. Try partial match on keywords
+    matched_articles = []
+    seen_urls = set()
+    for indexed_kw, arts in _in_memory_keyword_index.items():
+        if kw_lower in indexed_kw or indexed_kw in kw_lower:
+            for art in arts:
+                if art["url"] not in seen_urls:
+                    matched_articles.append(art)
+                    seen_urls.add(art["url"])
+                    
+    # 3. Fallback to title/summary substring matching
+    if len(matched_articles) < 5:
+        for art in _all_cached_articles:
+            if art["url"] not in seen_urls:
+                title = art.get("title", "").lower()
+                summary = art.get("summary", "").lower()
+                if kw_lower in title or kw_lower in summary:
+                    matched_articles.append(art)
+                    seen_urls.add(art["url"])
+                    
+    return matched_articles

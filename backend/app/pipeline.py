@@ -34,6 +34,15 @@ from app.services.validator import (
 
 logger = logging.getLogger(__name__)
 
+# Global pipeline progress tracking
+pipeline_status = {
+    "status": "idle",  # "idle", "running", "completed", "failed"
+    "progress": 0,
+    "current_keyword": "",
+    "started_at": "",
+    "message": ""
+}
+
 TARGET_ARTICLE_COUNT = 50
 
 import re
@@ -231,19 +240,9 @@ async def process_and_validate_candidate(
             stats["scrape_failures"] += 1
             return None
             
-        # Keyword generation (AFTER scraping, BEFORE quality/source validation checks)
-        from app.services.keyword_service import generate_article_keywords
-        try:
-            art_keywords = await generate_article_keywords(
-                title=title,
-                description=desc,
-                content=scraped_text,
-                url=url,
-                client=client
-            )
-        except Exception as e:
-            logger.error(f"Error generating keywords for article '{title}': {e}")
-            art_keywords = ["Manufacturing", "Industrial Technology", "General"]
+        # Get cached keywords if they exist, otherwise initialize as empty list
+        from app.services.cache import get_cached_keywords_for_article
+        art_keywords = get_cached_keywords_for_article(url) or []
             
         # 3. Post-scrape quality and source checks
         source_ok, source_reason = is_valid_source_type(url, title, scraped_text)
@@ -361,6 +360,13 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     7. Fetch, Scrape, and Validate pinned articles using round-robin representation.
     8. Cache and return the results.
     """
+    global pipeline_status
+    pipeline_status["status"] = "running"
+    pipeline_status["current_keyword"] = keyword or "All Keywords"
+    pipeline_status["started_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    pipeline_status["progress"] = 10
+    pipeline_status["message"] = "Initializing news ingestion pipeline..."
+
     pipeline_start_time = time.perf_counter()
     db_keyword = keyword.lower().strip() if keyword else "default_dashboard"
     
@@ -369,6 +375,8 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
         cached = get_cached_results(db_keyword)
         if cached:
             logger.info(f"Returning cached pipeline results for: '{db_keyword}'")
+            pipeline_status["status"] = "idle"
+            pipeline_status["progress"] = 100
             return cached
 
     logger.info(f"Running pipeline for keyword: '{db_keyword}' (force_refresh={force_refresh})")
@@ -390,7 +398,8 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     if keyword:
         selected_keywords = preprocess_keyword_string(keyword)
     else:
-        selected_keywords = [k.strip().lower() for k in settings.DEFAULT_KEYWORDS if k.strip()]
+        from app.services.monitored_keywords import load_monitored_keywords
+        selected_keywords = [k.strip().lower() for k in load_monitored_keywords() if k.strip()]
         
     # Fetch pinned technology articles first so we can extract their domains
     raw_pinned = await fetch_pinned_articles()
@@ -760,10 +769,39 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     logger.info("Enriching final pinned articles with LLM intelligence...")
     summarized_pinned = await enrich_articles_with_llm(summarized_pinned)
     
+    # Generate keywords for the final accepted articles using Gemini Flash (if not already cached)
+    from app.services.keyword_service import generate_article_keywords
+    from app.services.cache import cache_article, build_in_memory_index
+    
+    pipeline_status["progress"] = 90
+    pipeline_status["message"] = "Generating 3 semantic keywords per article using Gemini Flash..."
+    
+    logger.info("Generating keywords for final accepted articles...")
+    all_final_articles = summarized_articles + summarized_pinned
+    for idx, art in enumerate(all_final_articles):
+        url = art.get("url")
+        title = art.get("title", "")
+        summary = art.get("summary", "")
+        content = art.get("scraped_content", "")
+        
+        # Call keyword generator (handles caching internally)
+        keywords = await generate_article_keywords(
+            title=title,
+            description=art.get("description", "") or summary,
+            content=content,
+            url=url
+        )
+        art["keywords"] = keywords
+        
+        # Save to cache.json
+        cache_article(art)
+        
+    # Rebuild in-memory keyword search index
+    build_in_memory_index()
+    
     # Calculate keyword counts by aggregating keywords from all currently available articles
     keyword_counts = {}
-    all_current_articles = summarized_articles + summarized_pinned
-    for art in all_current_articles:
+    for art in all_final_articles:
         kws = art.get("keywords") or []
         for kw in kws:
             kw_cleaned = kw.strip()
@@ -792,5 +830,9 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     
     # 8. Save in SQLite cache
     save_cached_results(db_keyword, payload)
+    
+    pipeline_status["status"] = "completed"
+    pipeline_status["progress"] = 100
+    pipeline_status["message"] = "Pipeline execution completed successfully."
     
     return payload

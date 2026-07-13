@@ -15,7 +15,7 @@ async def generate_article_keywords(
     client: Optional[httpx.AsyncClient] = None
 ) -> List[str]:
     """
-    Generates exactly 3 semantic keywords for an article using Gemini 1.5 Flash.
+    Generates exactly 3 semantic search keywords for an article using Gemini Flash.
     Uses cached keywords if already generated.
     """
     # 1. Check cache first
@@ -24,10 +24,24 @@ async def generate_article_keywords(
         logger.info(f"Using cached keywords for article: {url} -> {cached_kws}")
         return cached_kws
 
-    # If mock article or empty content, return quick fallback keywords
+    # Forbidden generic terms that should not be used as keywords
+    forbidden = {"news", "article", "update", "latest", "report", "today", "technology", "business", "company", "information"}
+
+    # If mock article or empty content, return quick fallback keywords based on title/domain
     if "-mock.com" in url or not content:
-        # Generate some simple mock keywords based on the title/keywords
-        fallback = ["Manufacturing", "Automation", "Industry Insights"]
+        # Simple extraction from title to look a bit realistic
+        words = [w.strip(".,;:!?()[]{}'\"-") for w in title.split()]
+        candidates = []
+        seen_cand = set()
+        for w in words:
+            if len(w) > 3 and w.lower() not in forbidden and w.lower() not in {"how", "what", "with", "from", "that", "this", "your", "their"}:
+                if w.lower() not in seen_cand:
+                    seen_cand.add(w.lower())
+                    candidates.append(w)
+        # Pad if needed
+        while len(candidates) < 3:
+            candidates.append("Manufacturing")
+        fallback = candidates[:3]
         save_cached_keywords_for_article(url, fallback)
         return fallback
 
@@ -39,32 +53,23 @@ async def generate_article_keywords(
         return ["Manufacturing", "Industrial Technology", "General"]
 
     system_prompt = (
-        "You are an expert manufacturing and industrial technology news analyst.\n"
-        "Analyze the provided article's title, description, and content to identify exactly three concise, high-quality semantic keywords representing the article's primary topics.\n"
-        "These keywords should not simply be nouns extracted from the text; they should represent the core subject matter of the article.\n"
-        "Do not generate generic words like 'news', 'article', 'technology', 'business', 'update'.\n"
-        "Examples of high-quality semantic keywords:\n"
-        "- Industrial AI\n"
-        "- Predictive Maintenance\n"
-        "- Decarbonization\n"
-        "- Supply Chain\n"
-        "- Digital Twin\n"
-        "- Robotics\n"
-        "- Industrial Automation\n"
-        "- Carbon Capture\n"
-        "- Smart Manufacturing\n"
-        "- Green Cement\n"
-        "You MUST return your output in strict JSON format with these exact keys:\n"
+        "You are an expert news analyst. Analyze the provided article's title, summary, and content to identify exactly 3 concise, high-quality, meaningful search keywords or tags representing the article's primary topics.\n"
+        "Requirements:\n"
+        "1. You MUST return exactly 3 keywords.\n"
+        "2. The keywords must be unique (no duplicates).\n"
+        "3. Do NOT use generic words like: 'news', 'article', 'update', 'latest', 'report', 'today', 'technology', 'business', 'company', 'information'.\n"
+        "4. Prefer specific: company names, technologies, products, organizations, countries, people, events, AI topics, cybersecurity topics, finance topics, scientific topics.\n"
+        "Format your output in strict JSON with a single key 'keywords' containing the array of 3 strings. Example:\n"
         "{\n"
-        '  "keywords": ["<keyword1>", "<keyword2>", "<keyword3>"]\n'
-        "}\n"
+        '  "keywords": ["NVIDIA", "Blackwell", "AI GPU"]\n'
+        "}"
     )
 
-    user_prompt = (
-        f"Article Title: {title}\n"
-        f"Article Description: {description}\n"
-        f"Article Content: {content[:3000]}\n"
-    )
+    user_prompt = f"Article Title: {title}\n"
+    if description:
+        user_prompt += f"Article Summary/Description: {description}\n"
+    if content:
+        user_prompt += f"Article Content: {content[:4000]}\n"
 
     payload = {
         "contents": [
@@ -101,18 +106,46 @@ async def generate_article_keywords(
         parsed = json.loads(res_text)
         keywords = parsed.get("keywords", [])
         
-        # Validate exact 3 keywords constraint and clean them
-        cleaned_kws = [str(k).strip() for k in keywords if k]
+        # Clean and deduplicate case-insensitively
+        cleaned_kws = []
+        seen = set()
+        for k in keywords:
+            k_clean = str(k).strip()
+            if not k_clean:
+                continue
+            k_lower = k_clean.lower()
+            if k_lower in forbidden:
+                continue
+            if k_lower not in seen:
+                seen.add(k_lower)
+                cleaned_kws.append(k_clean)
+        
+        # Adjust/truncate/pad to exactly 3
         if len(cleaned_kws) != 3:
-            # Adjust/truncate/pad to exactly 3 if needed
             if len(cleaned_kws) > 3:
                 cleaned_kws = cleaned_kws[:3]
-            elif len(cleaned_kws) < 3:
-                while len(cleaned_kws) < 3:
-                    cleaned_kws.append("Manufacturing")
+            else:
+                fallbacks = ["Manufacturing", "Industrial Technology", "Automation", "AI", "Cement Industry"]
+                for fb in fallbacks:
+                    if len(cleaned_kws) >= 3:
+                        break
+                    if fb.lower() not in seen and fb.lower() not in forbidden:
+                        seen.add(fb.lower())
+                        cleaned_kws.append(fb)
         
         save_cached_keywords_for_article(url, cleaned_kws)
         return cleaned_kws
     except Exception as e:
         logger.error(f"Gemini keyword generation failed: {e}. Returning fallback keywords (not saved to cache).")
-        return ["Manufacturing", "Industrial Technology", "General"]
+        # Find 3 words from title as fallback
+        words = [w.strip(".,;:!?()[]{}'\"-") for w in title.split()]
+        candidates = []
+        seen_cand = set()
+        for w in words:
+            if len(w) > 3 and w.lower() not in forbidden:
+                if w.lower() not in seen_cand:
+                    seen_cand.add(w.lower())
+                    candidates.append(w)
+        while len(candidates) < 3:
+            candidates.append("Manufacturing")
+        return candidates[:3]

@@ -242,6 +242,43 @@ export default function ArticleCard({ article, onTogglePin }) {
         <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 }}>
           {summary}
         </p>
+
+        {/* Clickable keyword tags */}
+        {article.keywords && article.keywords.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginTop: '0.5rem', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Tags:</span>
+            {article.keywords.map((kw, idx) => (
+              <span 
+                key={idx}
+                style={{
+                  fontSize: '0.7rem',
+                  fontWeight: 600,
+                  padding: '0.15rem 0.5rem',
+                  borderRadius: '100px',
+                  backgroundColor: 'rgba(226, 160, 43, 0.1)',
+                  color: 'var(--color-secondary)',
+                  border: '1px solid rgba(226, 160, 43, 0.2)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease'
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.dispatchEvent(new CustomEvent('search-keyword', { detail: kw }));
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = 'var(--color-secondary)';
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'rgba(226, 160, 43, 0.1)';
+                  e.currentTarget.style.color = 'var(--color-secondary)';
+                }}
+              >
+                {kw}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Business Intelligence Accordion */}

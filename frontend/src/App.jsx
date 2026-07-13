@@ -1,5 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { fetchDashboardData, forceRefreshDashboard, pinArticle, unpinArticle } from './api/newsApi';
+import { 
+  fetchDashboardData, 
+  forceRefreshDashboard, 
+  pinArticle, 
+  unpinArticle,
+  fetchMonitoredKeywords,
+  addMonitoredKeyword,
+  removeMonitoredKeyword,
+  runPipelineInBackground,
+  fetchPipelineStatus
+} from './api/newsApi';
 import KeywordAutocomplete from './components/KeywordAutocomplete';
 import RefreshTimer from './components/RefreshTimer';
 import PinnedSection from './components/PinnedSection';
@@ -7,7 +17,22 @@ import ArticleGrid from './components/ArticleGrid';
 import ArticleCard from './components/ArticleCard';
 import DalmiaLogo from './components/DalmiaLogo';
 import Sidebar from './components/Sidebar';
-import { Newspaper, AlertCircle, Building2, Terminal, Sun, Moon, Search, Zap, Menu } from 'lucide-react';
+import { 
+  Newspaper, 
+  AlertCircle, 
+  Building2, 
+  Terminal, 
+  Sun, 
+  Moon, 
+  Search, 
+  Zap, 
+  Menu,
+  Trash2,
+  Play,
+  LogOut,
+  Sliders,
+  CheckCircle2
+} from 'lucide-react';
 
 const LoadingSkeleton = () => (
   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.5rem', width: '100%' }}>
@@ -26,11 +51,12 @@ const LoadingSkeleton = () => (
 );
 
 export default function App() {
+  const [userRole, setUserRole] = useState(() => localStorage.getItem('user_role') || null);
   const [normalFeed, setNormalFeed] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
   const [pinnedArticles, setPinnedArticles] = useState([]);
   const [searchKeyword, setSearchKeyword] = useState('');
-  const [activeView, setActiveView] = useState('feed'); // 'feed', 'search'
+  const [activeView, setActiveView] = useState('feed'); // 'feed', 'search', 'admin'
   const [lastUpdated, setLastUpdated] = useState('');
   const [nextUpdate, setNextUpdate] = useState('');
 
@@ -41,11 +67,17 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
   
-  // Sidebar & search state synchronization
+  // Sidebar & search state
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [chips, setChips] = useState([]);
   const [keywordCounts, setKeywordCounts] = useState({});
   
+  // Admin dashboard state
+  const [monitoredKeywords, setMonitoredKeywords] = useState([]);
+  const [newKeywordInput, setNewKeywordInput] = useState('');
+  const [isAddingKeyword, setIsAddingKeyword] = useState(false);
+  const [pipelineRunStatus, setPipelineRunStatus] = useState({ status: 'idle', progress: 0, message: '' });
+
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('theme') || 'light';
   });
@@ -60,6 +92,7 @@ export default function App() {
   };
 
   const loadInitialData = async () => {
+    if (!userRole) return;
     setIsLoading(true);
     setError(null);
     try {
@@ -71,6 +104,16 @@ export default function App() {
       if (data.keyword_counts) {
         setKeywordCounts(data.keyword_counts);
       }
+      
+      // Load monitored keywords for admin users
+      if (userRole === 'admin') {
+        const adminData = await fetchMonitoredKeywords();
+        setMonitoredKeywords(adminData.keywords || []);
+        
+        // Also fetch active pipeline status in case it is already running
+        const pipeRes = await fetchPipelineStatus();
+        setPipelineRunStatus(pipeRes.status);
+      }
     } catch (err) {
       setError(err.message || 'Failed to load news dashboard payload.');
     } finally {
@@ -78,7 +121,44 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    if (userRole) {
+      loadInitialData();
+    }
+  }, [userRole]);
+
+  useEffect(() => {
+    const handleSearchEvent = (e) => {
+      const tag = e.detail;
+      setChips([tag]);
+      handleSearch(tag);
+    };
+    window.addEventListener('search-keyword', handleSearchEvent);
+    return () => window.removeEventListener('search-keyword', handleSearchEvent);
+  }, []);
+
+  // Poll pipeline progress status when it's running
+  useEffect(() => {
+    let intervalId;
+    if (pipelineRunStatus.status === 'running' && userRole === 'admin') {
+      intervalId = setInterval(async () => {
+        try {
+          const res = await fetchPipelineStatus();
+          setPipelineRunStatus(res.status);
+          if (res.status.status !== 'running') {
+            // Reload news items on complete
+            loadInitialData();
+          }
+        } catch (err) {
+          console.error('Error polling status:', err);
+        }
+      }, 2000);
+    }
+    return () => clearInterval(intervalId);
+  }, [pipelineRunStatus.status, userRole]);
+
   const handleForceRefresh = async () => {
+    if (userRole !== 'admin') return;
     setIsRefreshing(true);
     setError(null);
     try {
@@ -103,10 +183,6 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    loadInitialData();
-  }, []);
-
   const handleSearch = async (term) => {
     setIsLoading(true);
     setError(null);
@@ -123,7 +199,7 @@ export default function App() {
       if (data.last_updated) setLastUpdated(data.last_updated);
       if (data.next_update) setNextUpdate(data.next_update);
       setActiveView('search');
-      setVisibleSearchCount(10); // Reset search pagination count
+      setVisibleSearchCount(10);
     } catch (err) {
       setError(err.message || 'Search failed.');
     } finally {
@@ -136,7 +212,7 @@ export default function App() {
     setSearchResults([]);
     setChips([]);
     setActiveView('feed');
-    setVisibleFeedCount(10); // Reset feed pagination count
+    setVisibleFeedCount(10);
   };
 
   const handleSelectSidebarTag = (tag) => {
@@ -171,8 +247,249 @@ export default function App() {
     }
   };
 
+  const handleLogin = (role) => {
+    localStorage.setItem('user_role', role);
+    setUserRole(role);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('user_role');
+    setUserRole(null);
+    handleClear();
+  };
+
+  const handleAddKeyword = async () => {
+    const kw = newKeywordInput.trim();
+    if (!kw) return;
+    setIsAddingKeyword(true);
+    try {
+      const res = await addMonitoredKeyword(kw);
+      setMonitoredKeywords(res.keywords);
+      setNewKeywordInput('');
+      setPipelineRunStatus({
+        status: 'running',
+        progress: 15,
+        current_keyword: kw,
+        started_at: new Date().toISOString(),
+        message: 'Spawning background scraping for new keyword...'
+      });
+    } catch (err) {
+      setError(err.message || 'Failed to add keyword.');
+    } finally {
+      setIsAddingKeyword(false);
+    }
+  };
+
+  const handleRemoveKeyword = async (kw) => {
+    try {
+      const res = await removeMonitoredKeyword(kw);
+      setMonitoredKeywords(res.keywords);
+    } catch (err) {
+      setError(err.message || 'Failed to remove keyword.');
+    }
+  };
+
+  const handleTriggerPipeline = async () => {
+    try {
+      const res = await runPipelineInBackground();
+      setPipelineRunStatus(res.status);
+    } catch (err) {
+      setError(err.message || 'Failed to trigger pipeline execution.');
+    }
+  };
+
+  const renderAdminPanel = () => {
+    return (
+      <div className="admin-section animate-fade-in">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem' }}>
+          <Sliders size={20} style={{ color: 'var(--color-primary)' }} />
+          <h2 style={{ fontSize: '1.25rem', fontFamily: 'var(--font-title)' }}>
+            Admin Dashboard
+          </h2>
+        </div>
+        
+        <div className="admin-grid">
+          {/* Monitored Keywords Management */}
+          <div className="glass-panel admin-card">
+            <h3 style={{ fontSize: '1.1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontFamily: 'var(--font-title)' }}>
+              <Zap size={16} style={{ color: 'var(--color-secondary)' }} />
+              Monitored Keywords
+            </h3>
+            
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+              <input 
+                type="text" 
+                value={newKeywordInput}
+                onChange={(e) => setNewKeywordInput(e.target.value)}
+                placeholder="Add new search keyword..."
+                style={{
+                  flexGrow: 1,
+                  padding: '0.65rem 1rem',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                  background: 'var(--bg-surface-hover)',
+                  color: 'var(--text-primary)',
+                  fontSize: '0.95rem',
+                  outline: 'none'
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleAddKeyword();
+                }}
+              />
+              <button
+                onClick={handleAddKeyword}
+                disabled={isAddingKeyword || !newKeywordInput.trim()}
+                style={{
+                  background: 'var(--gradient-tech)',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '0.65rem 1.5rem',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '0.9rem',
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px var(--glow-primary)'
+                }}
+              >
+                {isAddingKeyword ? 'Adding...' : 'Add'}
+              </button>
+            </div>
+
+            <div style={{ maxHeight: '320px', overflowY: 'auto', marginTop: '0.5rem', paddingRight: '0.25rem' }}>
+              {monitoredKeywords.length > 0 ? (
+                monitoredKeywords.map((kw, idx) => (
+                  <div key={idx} className="monitored-keyword-row">
+                    <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{kw}</span>
+                    <button
+                      onClick={() => handleRemoveKeyword(kw)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'var(--text-muted)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '0.25rem',
+                        borderRadius: '50%'
+                      }}
+                      title="Remove Keyword"
+                    >
+                      <Trash2 size={16} style={{ color: 'var(--color-accent)' }} />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                  No monitored keywords configured.
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Pipeline controls and Status */}
+          <div className="glass-panel admin-card">
+            <h3 style={{ fontSize: '1.1rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontFamily: 'var(--font-title)' }}>
+              <Play size={16} style={{ color: 'var(--color-primary)' }} />
+              Scraping Pipeline Controls
+            </h3>
+            
+            <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              Launch the news ingestion aggregator. It will scrape monitored websites, perform LLM reasoning, extract article details, generate 3 search tags via Gemini Flash, and update the cache.
+            </p>
+
+            <button
+              onClick={handleTriggerPipeline}
+              disabled={pipelineRunStatus.status === 'running'}
+              style={{
+                background: 'var(--gradient-tech)',
+                color: '#ffffff',
+                border: 'none',
+                padding: '0.85rem 1.5rem',
+                borderRadius: '8px',
+                fontWeight: 600,
+                fontSize: '0.95rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.5rem',
+                width: '100%',
+                boxShadow: '0 4px 12px var(--glow-primary)',
+                opacity: pipelineRunStatus.status === 'running' ? 0.6 : 1,
+                cursor: pipelineRunStatus.status === 'running' ? 'not-allowed' : 'pointer'
+              }}
+            >
+              <Play size={16} />
+              {pipelineRunStatus.status === 'running' ? 'Aggregation Running...' : 'Trigger Scraping Pipeline'}
+            </button>
+
+            {pipelineRunStatus.status === 'running' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 600 }}>
+                  <span style={{ color: 'var(--text-primary)' }}>{pipelineRunStatus.message}</span>
+                  <span style={{ color: 'var(--color-secondary)' }}>{pipelineRunStatus.progress}%</span>
+                </div>
+                <div className="progress-bar-bg">
+                  <div className="progress-bar-fill" style={{ width: `${pipelineRunStatus.progress}%` }}></div>
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Started: {pipelineRunStatus.started_at ? new Date(pipelineRunStatus.started_at).toLocaleTimeString() : '--:--'}
+                </span>
+              </div>
+            )}
+
+            {pipelineRunStatus.status === 'completed' && (
+              <div style={{ color: '#10b981', fontSize: '0.85rem', marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(16, 185, 129, 0.05)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                <CheckCircle2 size={16} />
+                <span>Aggregator completed successfully. Dashboard is updated!</span>
+              </div>
+            )}
+
+            {pipelineRunStatus.status === 'failed' && (
+              <div style={{ color: 'var(--color-accent)', fontSize: '0.85rem', marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(239, 68, 68, 0.05)', padding: '0.75rem', borderRadius: '6px', border: '1px solid rgba(239, 68, 68, 0.2)' }}>
+                <AlertCircle size={16} />
+                <span>Error: {pipelineRunStatus.message}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="app-container">
+      {/* Login Screen Gateway */}
+      {!userRole && (
+        <div className="login-gateway-overlay">
+          <div className="glass-panel login-gateway-card animate-fade-in">
+            <DalmiaLogo height="48px" />
+            <h2 style={{ fontSize: '1.75rem', color: 'var(--text-primary)', fontFamily: 'var(--font-title)' }}>
+              Dalmia Cement <span style={{ color: '#e2a02b' }}>Intel Hub</span>
+            </h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5 }}>
+              Select your authorization role profile to access the news dashboard:
+            </p>
+            <div className="role-cards-container">
+              <div className="role-card" onClick={() => handleLogin('employee')}>
+                <Building2 size={36} style={{ color: '#1a3a5c' }} />
+                <h3 style={{ fontSize: '1.15rem' }}>Employee Profile</h3>
+                <p style={{ fontSize: '0.8rem', textAlign: 'center', lineHeight: 1.4 }}>
+                  Browse dynamic feeds, search cache, pin competitor reports and read news.
+                </p>
+              </div>
+              <div className="role-card" onClick={() => handleLogin('admin')}>
+                <Terminal size={36} style={{ color: '#e2a02b' }} />
+                <h3 style={{ fontSize: '1.15rem' }}>Administrator Profile</h3>
+                <p style={{ fontSize: '0.8rem', textAlign: 'center', lineHeight: 1.4 }}>
+                  Manage search keywords, manual scraper trigger, view progress and refresh cache.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Premium Header */}
       <header 
         className="glass-panel animate-fade-in"
@@ -212,7 +529,7 @@ export default function App() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
-          {/* Theme Toggle Button */}
+          {/* Theme Toggle */}
           <button
             onClick={toggleTheme}
             style={{
@@ -228,21 +545,38 @@ export default function App() {
               transition: 'var(--transition-bounce)',
             }}
             title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)';
-              e.currentTarget.style.transform = 'scale(1.1)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-              e.currentTarget.style.transform = 'scale(1)';
-            }}
           >
             {theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}
           </button>
 
+          {/* User profile toggle */}
+          {userRole && (
+            <button
+              onClick={handleLogout}
+              style={{
+                background: 'rgba(255, 255, 255, 0.1)',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                color: '#ffffff',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                padding: '0.45rem 1rem',
+                borderRadius: '100px',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                fontFamily: 'var(--font-title)',
+                transition: 'var(--transition-smooth)'
+              }}
+            >
+              <LogOut size={12} />
+              <span>Log out ({userRole === 'admin' ? 'Admin' : 'Employee'})</span>
+            </button>
+          )}
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'rgba(255, 255, 255, 0.7)' }}>
             <Terminal size={14} style={{ color: '#e2a02b' }} />
-            <span style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}>POC Build v1.0.0</span>
+            <span style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}>POC Build v1.1.0</span>
           </div>
         </div>
       </header>
@@ -270,16 +604,6 @@ export default function App() {
             height: '45px'
           }}
           title={sidebarOpen ? "Hide Topics" : "Show Topics"}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'var(--color-primary)';
-            e.currentTarget.style.color = 'var(--color-primary)';
-            e.currentTarget.style.transform = 'scale(1.03)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = 'var(--border-color)';
-            e.currentTarget.style.color = 'var(--text-primary)';
-            e.currentTarget.style.transform = 'scale(1)';
-          }}
         >
           <Menu size={16} style={{ color: 'var(--color-secondary)' }} />
           <span className="sidebar-toggle-text">{sidebarOpen ? "Hide Topics" : "Show Topics"}</span>
@@ -298,6 +622,7 @@ export default function App() {
       {sidebarOpen && (
         <div 
           onClick={() => setSidebarOpen(false)}
+          className="mobile-sidebar-backdrop"
           style={{
             position: 'fixed',
             top: 0,
@@ -309,7 +634,6 @@ export default function App() {
             zIndex: 95,
             transition: 'all 0.3s ease'
           }}
-          className="mobile-sidebar-backdrop"
         />
       )}
 
@@ -331,7 +655,9 @@ export default function App() {
           <div className="nav-tabs-container glass-panel animate-fade-in">
             {[
               { id: 'feed', label: 'Home Feed', icon: Newspaper, count: normalFeed.length + pinnedArticles.length },
-              { id: 'search', label: 'Search Results', icon: Search, count: searchKeyword ? searchResults.length + pinnedArticles.length : null }
+              { id: 'search', label: 'Search Results', icon: Search, count: searchKeyword ? searchResults.length + pinnedArticles.length : null },
+              // Admin tab visible only to administrators
+              ...(userRole === 'admin' ? [{ id: 'admin', label: 'Admin Dashboard', icon: Sliders, count: null }] : [])
             ].map((tab) => {
               const Icon = tab.icon;
               const isActive = activeView === tab.id;
@@ -354,11 +680,12 @@ export default function App() {
           </div>
 
           {/* Refresh Scheduler Status */}
-          {nextUpdate && (
+          {nextUpdate && activeView !== 'admin' && (
             <RefreshTimer 
               nextUpdate={nextUpdate} 
               onManualRefresh={handleForceRefresh} 
               isLoading={isRefreshing} 
+              userRole={userRole}
             />
           )}
 
@@ -447,16 +774,6 @@ export default function App() {
                                 boxShadow: 'var(--shadow-panel)',
                                 transition: 'var(--transition-bounce)'
                               }}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.borderColor = 'var(--color-primary)';
-                                e.currentTarget.style.color = 'var(--color-primary)';
-                                e.currentTarget.style.transform = 'scale(1.03)';
-                              }}
-                              onMouseLeave={(e) => {
-                                e.currentTarget.style.borderColor = 'var(--border-color)';
-                                e.currentTarget.style.color = 'var(--text-primary)';
-                                e.currentTarget.style.transform = 'scale(1)';
-                              }}
                             >
                               Load More Articles
                             </button>
@@ -542,16 +859,6 @@ export default function App() {
                                 boxShadow: 'var(--shadow-panel)',
                                 transition: 'var(--transition-bounce)'
                               }}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.borderColor = 'var(--color-primary)';
-                                e.currentTarget.style.color = 'var(--color-primary)';
-                                e.currentTarget.style.transform = 'scale(1.03)';
-                              }}
-                              onMouseLeave={(e) => {
-                                e.currentTarget.style.borderColor = 'var(--border-color)';
-                                e.currentTarget.style.color = 'var(--text-primary)';
-                                e.currentTarget.style.transform = 'scale(1)';
-                              }}
                             >
                               Load More Articles
                             </button>
@@ -582,6 +889,9 @@ export default function App() {
                   </div>
                 );
               })()}
+
+              {/* Admin Panel View */}
+              {activeView === 'admin' && userRole === 'admin' && renderAdminPanel()}
 
             </div>
           )}
