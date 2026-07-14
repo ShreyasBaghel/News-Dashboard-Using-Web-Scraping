@@ -156,8 +156,70 @@ def save_cached_llm_insights(cache_key: str, payload: Dict[str, Any]):
     conn.commit()
     conn.close()
 
+def is_stale_fallback_keywords(url: str, keywords: List[str]) -> bool:
+    """
+    Checks if a list of keywords is a stale placeholder or title-split fallback.
+    """
+    if not keywords:
+        return True
+        
+    keywords_lower = [k.lower().strip() for k in keywords if k.strip()]
+    if not keywords_lower:
+        return True
+
+    # 1. Check placeholders
+    placeholders = {
+        "manufacturing", "industrial technology", "general", "automation", 
+        "industry insights", "general topic"
+    }
+    
+    # Check if they match exact placeholder lists
+    placeholder_lists = [
+        ["manufacturing", "industrial technology", "general"],
+        ["manufacturing", "automation", "industry insights"],
+        ["manufacturing", "industrial technology", "automation", "ai", "cement industry"]
+    ]
+    
+    # If the set of keywords is a subset of standard fallbacks or contains placeholder terms
+    if any(all(k in pl for k in keywords_lower) for pl in placeholder_lists):
+        return True
+        
+    if all(k in placeholders for k in keywords_lower):
+        return True
+
+    # 2. Check title-word fallback (if title is available in seen articles cache)
+    url_hash = _get_url_hash(url)
+    entry = _load_seen_articles().get(url_hash)
+    title = entry.get("title") if entry else None
+    
+    if title:
+        title_clean = title.lower()
+        title_words = [w.strip(".,;:!?()[]{}'\"-").lower() for w in title_clean.split() if w.strip(".,;:!?()[]{}'\"-")]
+        
+        # Stopwords + forbidden terms
+        forbidden = {
+            "news", "article", "update", "latest", "report", "today", "technology", "business", "company", "information",
+            "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as", "at", "be",
+            "because", "been", "before", "being", "below", "between", "both", "but", "by", "for", "from", "in", "into",
+            "is", "it", "its", "of", "on", "or", "that", "the", "this", "to", "with"
+        }
+        title_words_no_stop = [w for w in title_words if w not in forbidden]
+        
+        # If all keywords are single words and appear in the title
+        if all(len(k.split()) == 1 for k in keywords_lower):
+            # If they are exactly the first few non-stopwords of the title
+            first_cands = title_words_no_stop[:len(keywords_lower)]
+            if keywords_lower == first_cands:
+                return True
+                
+            # If they are a subset of the first 5 words of the title
+            if all(k in title_words[:5] for k in keywords_lower):
+                return True
+                
+    return False
+
 def get_cached_keywords_for_article(url: str) -> Optional[List[str]]:
-    """Retrieve cached keywords for a given article URL."""
+    """Retrieve cached keywords for a given article URL, checking for stale values."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -169,12 +231,8 @@ def get_cached_keywords_for_article(url: str) -> Optional[List[str]]:
     if row:
         try:
             keywords = json.loads(row[0])
-            placeholders = [
-                ["Manufacturing", "Industrial Technology", "General"],
-                ["Manufacturing", "Automation", "Industry Insights"]
-            ]
-            if keywords in placeholders:
-                logger.info(f"Detected placeholder keywords {keywords} for {url}. Invalidating and deleting cache entry.")
+            if is_stale_fallback_keywords(url, keywords):
+                logger.info(f"Detected stale fallback/placeholder keywords {keywords} for {url}. Invalidating and deleting cache entry.")
                 try:
                     conn = get_db_connection()
                     cursor = conn.cursor()
@@ -182,7 +240,7 @@ def get_cached_keywords_for_article(url: str) -> Optional[List[str]]:
                     conn.commit()
                     conn.close()
                 except Exception as db_err:
-                    logger.error(f"Failed to delete invalidated placeholder keywords from database: {db_err}")
+                    logger.error(f"Failed to delete invalidated stale keywords from database: {db_err}")
                 return None
             return keywords
         except Exception as e:
@@ -200,6 +258,63 @@ def save_cached_keywords_for_article(url: str, keywords: List[str]):
     )
     conn.commit()
     conn.close()
+
+def cleanup_stale_keywords_in_cache():
+    """
+    Scans the SQLite database and cache.json for stale placeholders or title-split fallback keywords,
+    deletes them from both caches, and saves the cache.json to disk.
+    """
+    logger.info("Initializing cache validation and database cleanup...")
+    
+    # 1. Clean seen articles cache (cache.json)
+    data = _load_seen_articles()
+    cleaned_urls = []
+    
+    for url_hash, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        keywords = entry.get("keywords")
+        if not url:
+            continue
+            
+        if keywords and is_stale_fallback_keywords(url, keywords):
+            entry["keywords"] = []  # Clear stale keywords
+            cleaned_urls.append(url)
+            
+    if cleaned_urls:
+        global _seen_urls_dirty
+        _seen_urls_dirty = True
+        save_seen_articles_to_disk()
+        logger.info(f"Cleaned stale keywords for {len(cleaned_urls)} articles in cache.json.")
+        
+    # 2. Clean SQLite article_keywords table
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT url, keywords FROM article_keywords")
+        rows = cursor.fetchall()
+        
+        urls_to_delete = []
+        for r in rows:
+            db_url = r[0]
+            try:
+                kws = json.loads(r[1])
+                if is_stale_fallback_keywords(db_url, kws):
+                    urls_to_delete.append(db_url)
+            except Exception:
+                urls_to_delete.append(db_url)  # Invalidate malformed entries
+                
+        if urls_to_delete:
+            cursor.executemany("DELETE FROM article_keywords WHERE url = ?", [(u,) for u in urls_to_delete])
+            conn.commit()
+            logger.info(f"Successfully pruned {len(urls_to_delete)} stale/placeholder entries from SQLite article_keywords table.")
+        else:
+            logger.info("No stale fallback/placeholder keywords found in SQLite article_keywords table.")
+            
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error during SQLite keywords cache pruning: {e}")
 
 def get_all_aggregated_keywords() -> List[str]:
     """Retrieve all unique keywords from the article_keywords cache table."""

@@ -21,6 +21,13 @@ class GeminiClient:
             model_name = f"models/{model_name}"
         return f"{self.base_url}/{self.api_version}/{model_name}:generateContent?key={self.api_key}"
 
+    def get_masked_url(self) -> str:
+        """Constructs a masked Gemini API URL for logging purposes."""
+        model_name = self.model.strip()
+        if not model_name.startswith("models/"):
+            model_name = f"models/{model_name}"
+        return f"{self.base_url}/{self.api_version}/{model_name}:generateContent?key=REDACTED"
+
     def get_headers(self) -> Dict[str, str]:
         """Returns standard headers for Gemini API requests."""
         return {
@@ -38,23 +45,45 @@ class GeminiClient:
         Raises httpx.HTTPStatusError for non-200 responses to be caught by the retry handler.
         """
         url = self.get_url()
+        masked_url = self.get_masked_url()
         headers = self.get_headers()
         timeout_cfg = httpx.Timeout(connect=3.0, read=timeout, write=3.0, pool=5.0)
 
+        # Confirm API Key is loaded
         if not self.api_key:
-            logger.error("GEMINI_API_KEY is not configured.")
+            logger.error(
+                f"Gemini API request failed. API key missing. "
+                f"Model: {self.model}, Endpoint: {masked_url}, Exception Type: ValueError, "
+                f"Exception Message: GEMINI_API_KEY is missing."
+            )
             raise ValueError("GEMINI_API_KEY is missing.")
 
-        if client is not None:
-            response = await client.post(url, json=payload, headers=headers, timeout=timeout_cfg)
-        else:
-            async with httpx.AsyncClient(timeout=timeout_cfg) as local_client:
-                response = await local_client.post(url, json=payload, headers=headers)
+        logger.info(f"Initiating Gemini request. Model: {self.model}, Endpoint: {masked_url}")
+        
+        try:
+            if client is not None:
+                response = await client.post(url, json=payload, headers=headers, timeout=timeout_cfg)
+            else:
+                async with httpx.AsyncClient(timeout=timeout_cfg) as local_client:
+                    response = await local_client.post(url, json=payload, headers=headers)
+        except Exception as e:
+            logger.error(
+                f"Gemini connection failed. "
+                f"Model: {self.model}, Endpoint: {masked_url}, "
+                f"Exception Type: {type(e).__name__}, Exception Message: {str(e)}"
+            )
+            raise
 
         if response.status_code != 200:
             self._log_error_status(response.status_code, response.text)
+            logger.error(
+                f"Gemini request failed. HTTP Status: {response.status_code}, "
+                f"Model: {self.model}, Endpoint: {masked_url}, "
+                f"Error Body: {response.text}"
+            )
             response.raise_for_status()
 
+        logger.info(f"Gemini request succeeded. Model: {self.model}, Endpoint: {masked_url}")
         return response
 
     async def post_request_with_retry(
@@ -69,6 +98,7 @@ class GeminiClient:
         """
         max_retries = 3
         delay = 1.0
+        masked_url = self.get_masked_url()
         
         for attempt in range(1, max_retries + 1):
             try:
@@ -78,7 +108,11 @@ class GeminiClient:
                 status_code = e.response.status_code
                 if status_code in [429, 500, 502, 503]:
                     if attempt == max_retries:
-                        logger.error(f"Gemini API request failed after {max_retries} attempts with status {status_code}.")
+                        logger.error(
+                            f"Gemini API request failed after {max_retries} attempts with status {status_code}. "
+                            f"Model: {self.model}, Endpoint: {masked_url}, Exception Type: HTTPStatusError, "
+                            f"Exception Message: {str(e)}"
+                        )
                         raise
                     logger.warning(
                         f"Gemini API returned transient status {status_code}. "
@@ -88,15 +122,23 @@ class GeminiClient:
                     delay *= 2
                 else:
                     # Do not retry on permanent errors (400, 401, 403, 404)
-                    logger.error(f"Gemini API returned non-retryable status {status_code}. Aborting retries.")
+                    logger.error(
+                        f"Gemini API returned non-retryable status {status_code}. Aborting retries. "
+                        f"Model: {self.model}, Endpoint: {masked_url}, Exception Type: HTTPStatusError, "
+                        f"Exception Message: {str(e)}"
+                    )
                     raise
             except (httpx.TimeoutException, httpx.NetworkError) as e:
                 if attempt == max_retries:
-                    logger.error(f"Gemini API request failed after {max_retries} attempts due to connection/timeout error: {e}")
+                    logger.error(
+                        f"Gemini API request failed after {max_retries} attempts due to connection/timeout error: {e}. "
+                        f"Model: {self.model}, Endpoint: {masked_url}, Exception Type: {type(e).__name__}, "
+                        f"Exception Message: {str(e)}"
+                    )
                     raise
                 logger.warning(
                     f"Gemini API encountered connection/timeout error: {e}. "
-                    f"Retrying in {delay:.1f}s (attempt {attempt}/{max_retries})..."
+                    f"Retrying in {delay:.1f}s (attempt {attempt}/{max_retries})...."
                 )
                 await asyncio.sleep(delay)
                 delay *= 2

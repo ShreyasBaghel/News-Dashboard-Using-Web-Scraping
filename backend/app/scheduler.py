@@ -1,6 +1,7 @@
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.pipeline import run_pipeline
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +19,11 @@ async def scheduled_pipeline_run():
 def start_scheduler():
     """Initialize and start the background scheduler."""
     if not scheduler.running:
-        # Schedule the pipeline to run every 12 hours
+        # Schedule the pipeline to run periodically
         scheduler.add_job(
             scheduled_pipeline_run,
             'interval',
-            hours=12,
+            hours=settings.REFRESH_INTERVAL_HOURS,
             id='default_pipeline_job',
             replace_existing=True
         )

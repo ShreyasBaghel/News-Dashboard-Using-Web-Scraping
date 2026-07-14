@@ -1,7 +1,7 @@
 import httpx
 import logging
 import asyncio
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from app.config import settings
 from app.services.cache import is_url_seen
 
@@ -379,3 +379,37 @@ def _generate_mock_news(phrases: List[str]) -> List[Dict[str, Any]]:
                     selected.append(art)
                     
     return selected
+
+
+async def fetch_articles(
+    phrases: List[str],
+    page: int = 1,
+    limit: Optional[int] = None,
+    sources: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Stable, provider-agnostic public interface to retrieve news articles.
+    All provider fallback, quota errors, rotation and API selection logic are encapsulated here.
+    Returns a normalized list of raw article dictionary structures:
+    {
+        "title": str,
+        "url": str,
+        "source": str,
+        "published_at": str,
+        "description": str
+    }
+    """
+    # Delegate to the existing fetch orchestration flow, which currently handles fallbacks
+    # and mock fallbacks under the hood. In the next phase, RSS/Hacker News/NewsData.io 
+    # integration will be added strictly inside this module.
+    articles = await fetch_news_for_phrases(phrases, page=page)
+    
+    if sources:
+        # Case-insensitive source filtering if requested
+        sources_lower = {s.lower() for s in sources}
+        articles = [a for a in articles if a.get("source", "").lower() in sources_lower]
+        
+    if limit:
+        articles = articles[:limit]
+        
+    return articles

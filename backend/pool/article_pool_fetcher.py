@@ -2,7 +2,7 @@ import logging
 import os
 import json
 from datetime import datetime, timezone
-from app.services.news_fetcher import fetch_news_for_phrases
+from app.services.news_fetcher import fetch_articles
 from app.services.cache import is_url_seen
 from app.services.diversity import getNormalizedDomain
 from app.services.language_detector import is_english
@@ -34,7 +34,7 @@ async def fetch_article_pool(topics: list[str], target_total: int = 150) -> list
         logger.info(f"Fetching articles for topic bucket: '{topic}'")
         
         while len(topic_articles) < target_per_topic and page <= max_pages:
-            raw_articles = await fetch_news_for_phrases([topic], page=page)
+            raw_articles = await fetch_articles([topic], page=page)
             if not raw_articles:
                 logger.info(f"No more articles found for topic '{topic}' at page {page}.")
                 break

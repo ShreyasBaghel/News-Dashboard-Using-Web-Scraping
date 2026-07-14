@@ -44,6 +44,17 @@ async def test_keyword_generation_service():
     logger.info("--- Testing Keyword Generation Service ---")
     mock_url = "https://www.industrynews-mock.com/fallback-123-1"
     
+    # Clean previous test cache entries for mock url
+    try:
+        from app.services.cache import get_db_connection
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM article_keywords WHERE url = ?", (mock_url,))
+        conn.commit()
+        conn.close()
+    except Exception as err:
+        logger.warning(f"Could not clean test cache: {err}")
+        
     # Check mock fallback keywords
     mock_kws = await generate_article_keywords(
         title="Test Mock Headline",

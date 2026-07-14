@@ -111,6 +111,13 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database and tables...")
     init_db()
     
+    logger.info("Pruning stale fallback/placeholder keywords from cache...")
+    try:
+        from app.services.cache import cleanup_stale_keywords_in_cache
+        cleanup_stale_keywords_in_cache()
+    except Exception as e:
+        logger.error(f"Error during startup cache validation: {e}")
+    
     logger.info("Validating Gemini API configuration...")
     try:
         from app.services.gemini_client import validate_gemini_config
@@ -150,17 +157,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for frontend communication (Vite default is 5173, CRA default is 3000, allow specific origins)
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
-
+# Enable CORS for frontend communication using settings config
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -211,7 +211,7 @@ def get_news_from_cache_or_default(keyword: Optional[str]) -> dict:
             "articles": matching,
             "pinned_articles": [],
             "last_updated": datetime.datetime.utcnow().isoformat().replace("+00:00", "Z"),
-            "next_update": (datetime.datetime.utcnow() + datetime.timedelta(hours=12)).isoformat().replace("+00:00", "Z"),
+            "next_update": (datetime.datetime.utcnow() + datetime.timedelta(hours=settings.REFRESH_INTERVAL_HOURS)).isoformat().replace("+00:00", "Z"),
             "keyword_counts": global_kws
         }
     else:
@@ -228,7 +228,7 @@ def get_news_from_cache_or_default(keyword: Optional[str]) -> dict:
             "articles": matching,
             "pinned_articles": [],
             "last_updated": datetime.datetime.utcnow().isoformat().replace("+00:00", "Z"),
-            "next_update": (datetime.datetime.utcnow() + datetime.timedelta(hours=12)).isoformat().replace("+00:00", "Z"),
+            "next_update": (datetime.datetime.utcnow() + datetime.timedelta(hours=settings.REFRESH_INTERVAL_HOURS)).isoformat().replace("+00:00", "Z"),
             "keyword_counts": global_kws
         }
 
@@ -254,8 +254,17 @@ async def refresh_news(request: RefreshRequest, x_user_role: Optional[str] = Hea
         payload = await run_pipeline(keyword=request.keyword, force_refresh=True)
         return overlay_pinned_articles(payload)
     except Exception as e:
-        logger.error(f"Error in POST /api/news/refresh: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Pipeline refresh error: {str(e)}")
+        logger.error(f"Error in POST /api/news/refresh: {str(e)}. Attempting cached fallback recovery...")
+        try:
+            payload = get_news_from_cache_or_default(request.keyword)
+            logger.warning(f"Successfully fell back to cached dashboard for POST /api/news/refresh after error: {str(e)}")
+            return overlay_pinned_articles(payload)
+        except Exception as cache_err:
+            logger.error(f"Cache fallback lookup also failed: {str(cache_err)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Pipeline refresh error: {str(e)}. Cache fallback also failed: {str(cache_err)}"
+            )
 
 @app.post("/api/news/pin", response_model=DashboardPayload)
 async def pin_article_endpoint(request: PinRequest):
@@ -371,4 +380,4 @@ async def run_pipeline_in_background(keyword: Optional[str] = None):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=settings.PORT, reload=True)
+    uvicorn.run("app.main:app", host=settings.HOST, port=settings.PORT, reload=True)

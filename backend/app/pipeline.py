@@ -13,7 +13,7 @@ from app.services.cache import (
     save_seen_articles_to_disk, get_seen_url_cache_stats, deduplicate_articles
 )
 from app.services.phrase_builder import expand_keyword
-from app.services.news_fetcher import fetch_news_for_phrases
+from app.services.news_fetcher import fetch_articles
 from app.services.scraper import scrape_article, _scrape_cache, get_canonical_url
 from pool.keyword_extractor import get_cached_keywords
 from app.services.summarizer import summarize_content, _summary_cache
@@ -349,17 +349,6 @@ def _generate_fallback_article(keyword: str, used_urls: set) -> Dict[str, Any]:
     }
 
 async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = False) -> Dict[str, Any]:
-    """
-    Run the end-to-end news pipeline:
-    1. Check cache (unless force_refresh is True)
-    2. Extract keywords
-    3. Query local pool
-    4. Sort or Shuffle candidates
-    5. Iterate, Scrape, Validate, and Summarize until 50 dynamic articles are successfully generated.
-    6. Fallback to live News APIs if pool candidates are exhausted or fail validation.
-    7. Fetch, Scrape, and Validate pinned articles using round-robin representation.
-    8. Cache and return the results.
-    """
     global pipeline_status
     pipeline_status["status"] = "running"
     pipeline_status["current_keyword"] = keyword or "All Keywords"
@@ -371,15 +360,43 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     db_keyword = keyword.lower().strip() if keyword else "default_dashboard"
     
     # 1. Check SQLite Cache
+    t_cache_start = time.perf_counter()
     if not force_refresh:
         cached = get_cached_results(db_keyword)
+        cache_duration = time.perf_counter() - t_cache_start
+        logger.info(f"Cache lookup completed in {cache_duration:.3f} seconds.")
         if cached:
             logger.info(f"Returning cached pipeline results for: '{db_keyword}'")
             pipeline_status["status"] = "idle"
             pipeline_status["progress"] = 100
             return cached
+    else:
+        cache_duration = time.perf_counter() - t_cache_start
+        logger.info(f"Cache lookup skipped due to force refresh (checked in {cache_duration:.3f} seconds).")
 
     logger.info(f"Running pipeline for keyword: '{db_keyword}' (force_refresh={force_refresh})")
+    
+    try:
+        return await _run_pipeline_inner(keyword, force_refresh, pipeline_start_time, db_keyword)
+    except Exception as e:
+        logger.error(f"Pipeline execution failed for keyword '{keyword}': {str(e)}. Attempting cache fallback...")
+        try:
+            cached_fallback = get_cached_results(db_keyword)
+            if cached_fallback:
+                logger.warning(f"Successfully recovered from pipeline error using cached payload for '{db_keyword}'. Error: {str(e)}")
+                pipeline_status["status"] = "completed"
+                pipeline_status["progress"] = 100
+                pipeline_status["message"] = "Pipeline execution failed but recovered using cached data."
+                return cached_fallback
+        except Exception as cache_err:
+            logger.error(f"Cache fallback lookup failed: {str(cache_err)}")
+            
+        pipeline_status["status"] = "failed"
+        pipeline_status["message"] = f"Pipeline failed: {str(e)}"
+        raise e
+
+async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool = False, pipeline_start_time: float = 0.0, db_keyword: str = "") -> Dict[str, Any]:
+    global pipeline_status
     
     # Initialize Rejection Stats and Timings
     stats = {
@@ -575,6 +592,7 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
                     if target_reached:
                         break
 
+            t_pool_start = time.perf_counter()
             # Pass 1: Unique domains (prefer domains not used yet)
             await process_batch_flow(ordered_pool_candidates, check_unique_domains=True)
             
@@ -582,6 +600,8 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
             if len(summarized_articles) < TARGET_ARTICLE_COUNT:
                 logger.info(f"Pool unique domains exhausted. Still need {TARGET_ARTICLE_COUNT - len(summarized_articles)} articles. Trying repeating domains...")
                 await process_batch_flow(ordered_pool_candidates, check_unique_domains=False)
+            pool_duration = time.perf_counter() - t_pool_start
+            logger.info(f"Pool candidates processing completed in {pool_duration:.3f} seconds.")
                 
             # 4. Fallback to live news API for shortfall
             if len(summarized_articles) < TARGET_ARTICLE_COUNT:
@@ -589,17 +609,23 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
                 logger.info(f"Pool only provided {len(summarized_articles)} valid articles. Attempting to fetch from live fallback...")
                 
                 phrases = []
+                t_phrase_start = time.perf_counter()
                 for kw in selected_keywords:
                     phrases.extend(await expand_keyword(kw))
                 if not phrases:
                     phrases = selected_keywords
+                phrase_duration = time.perf_counter() - t_phrase_start
+                logger.info(f"Phrase expansion completed in {phrase_duration:.3f} seconds.")
                     
                 # We will loop over multiple pages if needed (up to 5 pages since target is 50)
                 page = 1
                 max_pages = 5
                 while len(summarized_articles) < TARGET_ARTICLE_COUNT and page <= max_pages:
                     logger.info(f"Fetching page {page} of live news fallback...")
-                    live_raw = await fetch_news_for_phrases(phrases, page=page)
+                    t_fetch_start = time.perf_counter()
+                    live_raw = await fetch_articles(phrases, page=page)
+                    fetch_duration = time.perf_counter() - t_fetch_start
+                    logger.info(f"Article fetching for page {page} completed in {fetch_duration:.3f} seconds. Retrieved {len(live_raw)} raw articles.")
                     if not live_raw:
                         logger.info("No more live news articles found.")
                         break
@@ -714,7 +740,7 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
 
     # Calculate updates
     last_updated_dt = datetime.now(timezone.utc)
-    next_update_dt = last_updated_dt + timedelta(hours=12)
+    next_update_dt = last_updated_dt + timedelta(hours=settings.REFRESH_INTERVAL_HOURS)
     
     # 7. Print Performance & Statistics Summaries
     pipeline_duration = time.perf_counter() - pipeline_start_time
@@ -734,9 +760,9 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     logger.info(f"Candidates Summarized:           {stats.get('candidates_summarized', 0)}")
     logger.info(f"Accepted Articles:               {stats.get('accepted_articles', 0)}")
     logger.info("-" * 60)
-    logger.info(f"Average Scrape Time:             {avg_scrape:.3f} seconds (network only)")
-    logger.info(f"Average Relevance Check Time:    {avg_relevance:.3f} seconds")
-    logger.info(f"Average Summarization Time:      {avg_summary:.3f} seconds")
+    logger.info(f"Total Scrape Time spent:         {sum(scrape_times):.3f}s (average: {avg_scrape:.3f}s per page)")
+    logger.info(f"Total AI Relevance Check time:   {sum(relevance_times):.3f}s (average: {avg_relevance:.3f}s per check)")
+    logger.info(f"Total Summarization time:        {sum(summary_times):.3f}s (average: {avg_summary:.3f}s per article)")
     logger.info("=" * 60)
     logger.info("PIPELINE REJECTION REASON STATISTICS")
     logger.info("-" * 60)
@@ -759,15 +785,21 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     logger.info("=" * 60)
 
     # Deduplicate summarized feed
+    t_dedup_start = time.perf_counter()
     summarized_articles = deduplicate_articles(summarized_articles)
     summarized_pinned = deduplicate_articles(summarized_pinned)
+    dedup_duration = time.perf_counter() - t_dedup_start
+    logger.info(f"Deduplication phase completed in {dedup_duration:.3f} seconds.")
     
     # Run the LLM reasoning intelligence enrichment phase
+    t_enrich_start = time.perf_counter()
     from app.services.llm_reasoning import enrich_articles_with_llm
     logger.info("Enriching final dynamic articles with LLM intelligence...")
     summarized_articles = await enrich_articles_with_llm(summarized_articles)
     logger.info("Enriching final pinned articles with LLM intelligence...")
     summarized_pinned = await enrich_articles_with_llm(summarized_pinned)
+    enrich_duration = time.perf_counter() - t_enrich_start
+    logger.info(f"LLM enrichment phase completed in {enrich_duration:.3f} seconds.")
     
     # Generate keywords for the final accepted articles using Gemini Flash (if not already cached)
     from app.services.keyword_service import generate_article_keywords
@@ -777,6 +809,7 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     pipeline_status["message"] = "Generating 3 semantic keywords per article using Gemini Flash..."
     
     logger.info("Generating keywords for final accepted articles...")
+    t_kw_gen_start = time.perf_counter()
     all_final_articles = summarized_articles + summarized_pinned
     for idx, art in enumerate(all_final_articles):
         url = art.get("url")
@@ -798,7 +831,10 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
         
     # Rebuild in-memory keyword search index
     build_in_memory_index()
+    kw_gen_duration = time.perf_counter() - t_kw_gen_start
+    logger.info(f"Keyword generation stage completed in {kw_gen_duration:.3f} seconds.")
     
+    t_assembly_start = time.perf_counter()
     # Calculate keyword counts by aggregating keywords from all currently available articles
     keyword_counts = {}
     for art in all_final_articles:
@@ -830,6 +866,8 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     
     # 8. Save in SQLite cache
     save_cached_results(db_keyword, payload)
+    assembly_duration = time.perf_counter() - t_assembly_start
+    logger.info(f"Response assembly and SQLite caching completed in {assembly_duration:.3f} seconds.")
     
     pipeline_status["status"] = "completed"
     pipeline_status["progress"] = 100
