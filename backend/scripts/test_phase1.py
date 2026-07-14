@@ -12,7 +12,7 @@ from app.services.phrase_builder import expand_keyword
 from app.services.news_fetcher import (
     fetch_from_newsapi,
     fetch_from_gnews,
-    fetch_from_mediastack,
+    fetch_from_newsdata,
     fetch_news_for_phrases
 )
 
@@ -44,12 +44,12 @@ async def test_run(keyword: str):
         gnews_results = await fetch_from_gnews(phrase)
         print(f"  - GNews returned {len(gnews_results)} articles")
         
-        # Call Mediastack
-        mediastack_results = await fetch_from_mediastack(phrase)
-        print(f"  - Mediastack returned {len(mediastack_results)} articles")
+        # Call NewsData.io
+        newsdata_results = await fetch_from_newsdata(phrase)
+        print(f"  - NewsData.io returned {len(newsdata_results)} articles")
         
         # Merge and deduplicate
-        for art in newsapi_results + gnews_results + mediastack_results:
+        for art in newsapi_results + gnews_results + newsdata_results:
             url = art["url"]
             if url not in seen_urls:
                 seen_urls.add(url)

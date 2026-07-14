@@ -105,6 +105,53 @@ def overlay_pinned_articles(payload: dict) -> dict:
     new_payload["pinned_articles"] = final_pinned
     return new_payload
 
+async def validate_ollama_config() -> bool:
+    """
+    Validates that Ollama is running and that the configured model is installed.
+    If the model is missing or Ollama is unreachable, raises a startup error.
+    """
+    import httpx
+    url = f"{settings.ollama_url_resolved}/api/tags"
+    model = settings.OLLAMA_MODEL
+    logger.info(f"Validating Ollama configuration at {url} for model '{model}'...")
+    try:
+        timeout = httpx.Timeout(connect=3.0, read=5.0, write=3.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                raise RuntimeError(f"Ollama returned status {response.status_code} when listing models.")
+            
+            data = response.json()
+            models = data.get("models", [])
+            installed_model_names = []
+            for m in models:
+                if "name" in m:
+                    installed_model_names.append(m["name"])
+                if "model" in m:
+                    installed_model_names.append(m["model"])
+            
+            model_lower = model.lower()
+            model_with_latest = model_lower if ":" in model_lower else f"{model_lower}:latest"
+            
+            model_installed = False
+            for installed in installed_model_names:
+                inst_lower = installed.lower()
+                if inst_lower == model_lower or inst_lower == model_with_latest or inst_lower.startswith(model_lower + ":"):
+                    model_installed = True
+                    break
+                    
+            if not model_installed:
+                error_msg = f"Ollama model '{model}' is NOT installed. Installed models: {list(set(installed_model_names))}."
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+                
+            logger.info(f"Ollama model '{model}' successfully validated on startup.")
+            return True
+    except Exception as e:
+        error_msg = f"Ollama startup validation failed: {str(e)}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle event handler for database initialization and background scheduler."""
@@ -113,17 +160,18 @@ async def lifespan(app: FastAPI):
     
     logger.info("Pruning stale fallback/placeholder keywords from cache...")
     try:
-        from app.services.cache import cleanup_stale_keywords_in_cache
+        from app.services.cache import cleanup_stale_keywords_in_cache, migrate_caches
+        migrate_caches()
         cleanup_stale_keywords_in_cache()
     except Exception as e:
         logger.error(f"Error during startup cache validation: {e}")
     
-    logger.info("Validating Gemini API configuration...")
+    logger.info("Validating Ollama configuration...")
     try:
-        from app.services.gemini_client import validate_gemini_config
-        await validate_gemini_config()
+        await validate_ollama_config()
     except Exception as e:
-        logger.error(f"Error during startup Gemini config validation: {e}")
+        logger.error(f"Error during startup Ollama validation: {e}")
+        raise e
     
     logger.info("Ensuring fresh article pool on startup...")
     topics = [
@@ -135,7 +183,7 @@ async def lifespan(app: FastAPI):
         "cement industry"
     ]
     try:
-        await ensure_fresh_pool_on_startup(topics)
+        await ensure_fresh_pool_on_startup(topics, max_age_hours=0)
         load_keywords_cache()
         from app.services.cache import build_in_memory_index
         build_in_memory_index()

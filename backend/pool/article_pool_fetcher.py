@@ -34,7 +34,7 @@ async def fetch_article_pool(topics: list[str], target_total: int = 150) -> list
         logger.info(f"Fetching articles for topic bucket: '{topic}'")
         
         while len(topic_articles) < target_per_topic and page <= max_pages:
-            raw_articles = await fetch_articles([topic], page=page)
+            raw_articles = await fetch_articles([topic], page=page, is_pool_generation=True)
             if not raw_articles:
                 logger.info(f"No more articles found for topic '{topic}' at page {page}.")
                 break
@@ -133,6 +133,8 @@ def get_pool_age_hours(path: str = "data/article_pool.json") -> float | None:
 async def ensure_fresh_pool_on_startup(topics: list[str], target_total: int = 150, max_age_hours: int = 24) -> list[dict]:
     """Ensures a fresh pool of articles exists on server startup."""
     from pool.keyword_extractor import extract_keywords_from_pool, save_keywords_to_disk
+    from datetime import timedelta
+    from app.config import settings
     
     age = get_pool_age_hours()
     if age is None:
@@ -144,13 +146,63 @@ async def ensure_fresh_pool_on_startup(topics: list[str], target_total: int = 15
         pool = load_pool_from_disk()
         return pool
         
-    # Refresh pool
-    pool = await fetch_article_pool(topics, target_total)
-    save_pool_to_disk(pool)
+    # Load existing articles to avoid losing them
+    existing_articles = load_pool_from_disk()
+    
+    # Refresh pool (fetch new articles)
+    new_articles = await fetch_article_pool(topics, target_total)
+    
+    # Merge and deduplicate by URL
+    seen_urls = set()
+    merged_pool = []
+    
+    # Prioritize new articles
+    for art in new_articles:
+        url = art.get("url")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            merged_pool.append(art)
+            
+    # Add existing articles if they are not expired
+    ttl_days = settings.ttl_days_resolved or 7
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
+    
+    skipped_count = 0
+    expired_count = 0
+    for art in existing_articles:
+        url = art.get("url")
+        if not url:
+            continue
+        if url in seen_urls:
+            skipped_count += 1
+            continue
+            
+        # Parse published_at or fetched_at to check expiration
+        keep = True
+        date_str = art.get("published_at") or art.get("fetched_at")
+        if date_str:
+            try:
+                clean_date = date_str.replace("Z", "+00:00")
+                pub_date = datetime.fromisoformat(clean_date)
+                if pub_date.tzinfo is None:
+                    pub_date = pub_date.replace(tzinfo=timezone.utc)
+                if pub_date < cutoff:
+                    keep = False
+                    expired_count += 1
+            except Exception:
+                pass # Keep if parsing fails to be safe
+                
+        if keep:
+            seen_urls.add(url)
+            merged_pool.append(art)
+            
+    logger.info(f"Merged pool: new_fetched={len(new_articles)}, existing_kept={len(merged_pool)-len(new_articles)}, duplicates_skipped={skipped_count}, expired_skipped={expired_count}")
+    
+    save_pool_to_disk(merged_pool)
     
     # Trigger keyword extraction
-    logger.info("Triggering keyword extraction on the fresh pool...")
-    keywords = extract_keywords_from_pool(pool)
+    logger.info("Triggering keyword extraction on the merged pool...")
+    keywords = extract_keywords_from_pool(merged_pool)
     save_keywords_to_disk(keywords)
     
-    return pool
+    return merged_pool

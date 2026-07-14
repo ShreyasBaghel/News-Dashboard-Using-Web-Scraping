@@ -101,8 +101,138 @@ def init_db():
         )
     """)
     
+    # Table for newsdata usage tracking (daily credit protection)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS newsdata_usage (
+            date TEXT PRIMARY KEY,
+            request_count INTEGER DEFAULT 0
+        )
+    """)
+    
     conn.commit()
     conn.close()
+
+def get_newsdata_usage(date_str: str) -> int:
+    """Retrieve the number of NewsData.io requests made on a specific date."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT request_count FROM newsdata_usage WHERE date = ?", (date_str,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return row[0]
+    return 0
+
+def increment_newsdata_usage(date_str: str):
+    """Increment the NewsData.io daily request count in SQLite database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO newsdata_usage (date, request_count)
+        VALUES (?, 1)
+        ON CONFLICT(date) DO UPDATE SET request_count = request_count + 1
+    """)
+    conn.commit()
+    conn.close()
+
+def migrate_caches():
+    """
+    Ensure every article record in cache.json and seen_articles.json consistently stores:
+    title, url, published_at, and cache timestamp(s) where applicable.
+    """
+    logger.info("Starting cache schema migration check...")
+    
+    # We will migrate both files if they exist and are distinct
+    files_to_migrate = set()
+    if settings.cache_path_resolved:
+        files_to_migrate.add(os.path.abspath(settings.cache_path_resolved))
+    if settings.SEEN_ARTICLES_JSON_PATH:
+        files_to_migrate.add(os.path.abspath(settings.SEEN_ARTICLES_JSON_PATH))
+    
+    # Pre-load all known URL metadata from all files to find matching titles/published_at
+    url_metadata = {}
+    
+    # Phase 1: Scan and collect metadata from all files
+    for file_path in files_to_migrate:
+        if not os.path.exists(file_path):
+            continue
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for key, entry in data.items():
+                    if isinstance(entry, dict) and entry.get("url"):
+                        url = entry["url"].strip()
+                        title = entry.get("title")
+                        pub = entry.get("published_at")
+                        if title or pub:
+                            if url not in url_metadata:
+                                url_metadata[url] = {}
+                            if title:
+                                url_metadata[url]["title"] = title
+                            if pub:
+                                url_metadata[url]["published_at"] = pub
+        except Exception as e:
+            logger.error(f"Error scanning file {file_path} for migration: {e}")
+            
+    # Phase 2: Perform migration on each file
+    for file_path in files_to_migrate:
+        if not os.path.exists(file_path):
+            continue
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            if not isinstance(data, dict):
+                continue
+                
+            migrated = False
+            for key, entry in data.items():
+                if not isinstance(entry, dict) or not entry.get("url"):
+                    continue
+                url = entry["url"].strip()
+                
+                # Check for missing keys
+                if "title" not in entry or not entry.get("title") or "published_at" not in entry or not entry.get("published_at"):
+                    # Try to populate from collected metadata
+                    title = entry.get("title") or url_metadata.get(url, {}).get("title")
+                    published_at = entry.get("published_at") or url_metadata.get(url, {}).get("published_at")
+                    
+                    # Heuristics if still missing
+                    if not title:
+                        parts = [p for p in url.split("/") if p]
+                        if parts:
+                            last_part = parts[-1].split("?")[0]
+                            for ext in [".html", ".htm", ".shtml", ".php", ".aspx"]:
+                                if last_part.endswith(ext):
+                                    last_part = last_part[:-len(ext)]
+                            title = last_part.replace("-", " ").replace("_", " ").strip().title()
+                        if not title:
+                            title = "URL Article"
+                            
+                    if not published_at:
+                        added_at = entry.get("added_at")
+                        if added_at:
+                            published_at = added_at
+                        else:
+                            published_at = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+                            
+                    entry["title"] = title
+                    entry["published_at"] = published_at
+                    migrated = True
+            
+            if migrated:
+                tmp_path = file_path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=4)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                os.rename(tmp_path, file_path)
+                logger.info(f"Successfully migrated cache schema for {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to migrate cache file {file_path}: {e}")
+            
+    logger.info("Cache schema migration check finished.")
 
 def get_cached_llm_insights(cache_key: str) -> Optional[Dict[str, Any]]:
     """Retrieve cached LLM insights for a given key, validating TTL."""
@@ -396,16 +526,30 @@ def is_url_seen(url: str) -> bool:
         seen_url_misses += 1
         return False
 
-def add_seen_url(url: str):
-    """Mark a URL as seen in the memory cache."""
+def add_seen_url(url: str, title: Optional[str] = None, published_at: Optional[str] = None):
+    """Mark a URL as seen in the memory cache, storing title and published_at for schema completeness."""
     url_hash = _get_url_hash(url)
     data = _load_seen_articles()
     if url_hash not in data:
         data[url_hash] = {
             "url": url.strip(),
-            "added_at": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            "added_at": datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
+            "title": title or "",
+            "published_at": published_at or ""
         }
         _save_seen_articles(data)
+    else:
+        # Backward compatibility: populate missing fields in existing entries
+        entry = data[url_hash]
+        updated = False
+        if title and not entry.get("title"):
+            entry["title"] = title
+            updated = True
+        if published_at and not entry.get("published_at"):
+            entry["published_at"] = published_at
+            updated = True
+        if updated:
+            _save_seen_articles(data)
 
 def cache_article(article: Dict[str, Any]):
     """Save/update the full article metadata in the cache.json store."""

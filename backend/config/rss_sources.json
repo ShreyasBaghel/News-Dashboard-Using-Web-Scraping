@@ -1,0 +1,50 @@
+{
+    "AI": [
+        {
+            "name": "OpenAI Blog",
+            "url": "https://openai.com/news/feed.xml"
+        },
+        {
+            "name": "Anthropic Blog",
+            "url": "https://www.anthropic.com/index.xml"
+        },
+        {
+            "name": "Google DeepMind Blog",
+            "url": "https://deepmind.google/blog/feed/basic/"
+        },
+        {
+            "name": "Hugging Face Blog",
+            "url": "https://huggingface.co/blog/feed.xml"
+        },
+        {
+            "name": "NVIDIA AI Blog",
+            "url": "https://blogs.nvidia.com/feed/"
+        },
+        {
+            "name": "Microsoft AI Blog",
+            "url": "https://blogs.microsoft.com/ai/feed/"
+        },
+        {
+            "name": "Meta AI Blog",
+            "url": "https://ai.meta.com/blog/feed/"
+        }
+    ],
+    "Technology": [
+        {
+            "name": "TechCrunch",
+            "url": "https://techcrunch.com/feed/"
+        },
+        {
+            "name": "MIT Technology Review",
+            "url": "https://www.technologyreview.com/feed/"
+        },
+        {
+            "name": "IEEE Spectrum Robotics",
+            "url": "https://spectrum.ieee.org/rss/robotics/fulltext"
+        },
+        {
+            "name": "The Verge",
+            "url": "https://www.theverge.com/rss/index.xml"
+        }
+    ]
+}

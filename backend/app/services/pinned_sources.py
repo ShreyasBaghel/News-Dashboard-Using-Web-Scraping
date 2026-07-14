@@ -2,7 +2,7 @@ import logging
 import asyncio
 from typing import List, Dict, Any
 from app.config import settings
-from app.services.news_fetcher import fetch_from_newsapi, fetch_from_gnews, fetch_from_mediastack
+from app.services.news_fetcher import fetch_from_newsapi, fetch_from_gnews
 from app.services.language_detector import is_english
 
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ async def fetch_pinned_articles() -> List[Dict[str, Any]]:
     Returns all candidates so that the pipeline can validate and filter them.
     Falls back to mock tech articles if APIs are not configured.
     """
-    has_keys = any([settings.news_api_key_resolved, settings.gnews_key_resolved, settings.mediastack_key_resolved])
+    has_keys = any([settings.news_api_key_resolved, settings.gnews_key_resolved, settings.newsdata_key_resolved])
     
     if not has_keys:
         logger.info("No news API keys configured. Loading mock pinned articles.")
@@ -33,8 +33,9 @@ async def fetch_pinned_articles() -> List[Dict[str, Any]]:
             tasks.append(fetch_from_newsapi(phrase))
         if settings.gnews_key_resolved:
             tasks.append(fetch_from_gnews(phrase))
-        if settings.mediastack_key_resolved:
-            tasks.append(fetch_from_mediastack(phrase))
+        if settings.newsdata_key_resolved:
+            from app.services.news_fetcher import fetch_from_newsdata
+            tasks.append(fetch_from_newsdata(phrase))
             
         results = await asyncio.gather(*tasks, return_exceptions=True)
         

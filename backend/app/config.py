@@ -18,12 +18,18 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3.1-flash-lite"
     NEWSAPI_KEY: str = ""
     GNEWS_KEY: str = ""
-    MEDIASTACK_KEY: str = ""
+    NEWSDATA_KEY: str = ""
     
     # Backwards compatibility key support (optional, but good to have)
     NEWS_API_KEY: str = ""
     GNEWS_API_KEY: str = ""
-    MEDIASTACK_API_KEY: str = ""
+    NEWSDATA_API_KEY: str = ""
+    
+    # NewsData.io credit protection limit
+    NEWSDATA_DAILY_LIMIT: int = 30
+    
+    # RSS Sources configuration path
+    RSS_SOURCES_PATH: str = "config/rss_sources.json"
     
     # Local LLM settings from the plan
     OLLAMA_MODEL: str = "phi3:mini"
@@ -69,8 +75,8 @@ class Settings(BaseSettings):
         return self.GNEWS_KEY or self.GNEWS_API_KEY
 
     @property
-    def mediastack_key_resolved(self) -> str:
-        return self.MEDIASTACK_KEY or self.MEDIASTACK_API_KEY
+    def newsdata_key_resolved(self) -> str:
+        return self.NEWSDATA_KEY or self.NEWSDATA_API_KEY
 
     @property
     def ollama_url_resolved(self) -> str:

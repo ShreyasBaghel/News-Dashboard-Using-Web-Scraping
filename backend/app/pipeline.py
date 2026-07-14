@@ -575,7 +575,7 @@ async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool
                                     summarized_articles.append(val_art)
                                     used_domains.add(domain)
                                     used_urls.add(url)
-                                    add_seen_url(url)
+                                    add_seen_url(url, title=val_art.get("title"), published_at=val_art.get("published_at"))
                                     
                                     if len(summarized_articles) >= TARGET_ARTICLE_COUNT:
                                         target_reached = True
@@ -662,7 +662,7 @@ async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool
                 mock_art = _generate_fallback_article(keyword or "Manufacturing", used_urls)
                 summarized_articles.append(mock_art)
                 used_urls.add(mock_art["url"])
-                add_seen_url(mock_art["url"])
+                add_seen_url(mock_art["url"], title=mock_art.get("title"), published_at=mock_art.get("published_at"))
                 stats["accepted_articles"] += 1
         
             # 6. Scrape & Summarize pinned articles with round-robin selection and validation
@@ -690,7 +690,7 @@ async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool
                         )
                         if val_art:
                             summarized_pinned.append(val_art)
-                            add_seen_url(cand["url"])
+                            add_seen_url(cand["url"], title=val_art.get("title"), published_at=val_art.get("published_at"))
                             
             # If pinned shortfall exists, backfill with mock pinned articles
             if len(summarized_pinned) < 5:
@@ -713,7 +713,7 @@ async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool
                             )
                             if val_art:
                                 summarized_pinned.append(val_art)
-                                add_seen_url(cand["url"])
+                                add_seen_url(cand["url"], title=val_art.get("title"), published_at=val_art.get("published_at"))
                                 
     finally:
         # Flush the dirty seen articles to disk atomically
