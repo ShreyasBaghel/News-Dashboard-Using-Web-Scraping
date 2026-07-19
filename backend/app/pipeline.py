@@ -10,7 +10,8 @@ from typing import List, Dict, Any, Optional
 from app.config import settings
 from app.services.cache import (
     is_url_seen, add_seen_url, get_cached_results, save_cached_results,
-    save_seen_articles_to_disk, get_seen_url_cache_stats, deduplicate_articles
+    save_seen_articles_to_disk, get_seen_url_cache_stats, deduplicate_articles,
+    normalize_url, normalize_title, get_hash, is_hash_seen, mark_hash_seen
 )
 from app.services.phrase_builder import expand_keyword
 from app.services.news_fetcher import fetch_articles
@@ -277,6 +278,24 @@ async def process_and_validate_candidate(
             logger.info(f"Skipping candidate '{title}' because of relevance check ({relevance_kw}): {reason}")
             stats["failed_relevance_validation"] += 1
             return None
+            
+        # Deduplication (Phase 4)
+        norm_url_hash = get_hash(normalize_url(url))
+        norm_title_hash = get_hash(normalize_title(title))
+        
+        if is_hash_seen(norm_url_hash, "url"):
+            logger.info(f"Duplicate skipped\nReason: URL hash\nSource: {art.get('source', 'Unknown')}")
+            stats["duplicate_urls"] += 1
+            return None
+            
+        if is_hash_seen(norm_title_hash, "title"):
+            logger.info(f"Duplicate skipped\nReason: Title hash\nSource: {art.get('source', 'Unknown')}")
+            stats["duplicate_urls"] += 1
+            return None
+            
+        mark_hash_seen(norm_url_hash, "url")
+        mark_hash_seen(norm_title_hash, "title")
+
             
         # 5. Summarize content
         stats["candidates_summarized"] += 1
@@ -786,8 +805,7 @@ async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool
 
     # Deduplicate summarized feed
     t_dedup_start = time.perf_counter()
-    summarized_articles = deduplicate_articles(summarized_articles)
-    summarized_pinned = deduplicate_articles(summarized_pinned)
+    # Removed in Phase 4
     dedup_duration = time.perf_counter() - t_dedup_start
     logger.info(f"Deduplication phase completed in {dedup_duration:.3f} seconds.")
     
@@ -818,13 +836,21 @@ async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool
         content = art.get("scraped_content", "")
         
         # Call keyword generator (handles caching internally)
-        keywords = await generate_article_keywords(
+        from app.services.validator import validate_and_clean_tags
+        raw_keywords = await generate_article_keywords(
             title=title,
             description=art.get("description", "") or summary,
             content=content,
             url=url
         )
-        art["keywords"] = keywords
+        art["keywords"] = validate_and_clean_tags(
+            raw_tags=raw_keywords,
+            title=title,
+            summary=summary,
+            content=content,
+            entity_list=art.get("entities", []),
+            taxonomy=art.get("taxonomy", [])
+        )
         
         # Save to cache.json
         cache_article(art)
@@ -855,17 +881,11 @@ async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool
     sorted_kws = sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0].lower()))
     keyword_counts = {kw: cnt for kw, cnt in sorted_kws}
 
-    payload = {
-        "keyword": keyword or "Default Dashboard",
-        "articles": summarized_articles,
-        "pinned_articles": summarized_pinned,
-        "last_updated": last_updated_dt.isoformat().replace("+00:00", "Z"),
-        "next_update": next_update_dt.isoformat().replace("+00:00", "Z"),
-        "keyword_counts": keyword_counts
-    }
+    from app.services.dataset_manager import StagingDataset
+    staging = StagingDataset(keyword=keyword or "Default Dashboard")
+    staging.set_content(summarized_articles, summarized_pinned, keyword_counts)
+    payload = staging.commit()
     
-    # 8. Save in SQLite cache
-    save_cached_results(db_keyword, payload)
     assembly_duration = time.perf_counter() - t_assembly_start
     logger.info(f"Response assembly and SQLite caching completed in {assembly_duration:.3f} seconds.")
     

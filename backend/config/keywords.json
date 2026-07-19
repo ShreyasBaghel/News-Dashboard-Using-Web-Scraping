@@ -1,10 +1,38 @@
 [
-    "Artificial Intelligence",
-    "Cybersecurity",
-    "Robotics",
-    "Cloud Computing",
-    "Quantum Computing",
-    "Dalmia Cement",
-    "Manufacturing",
-    "Cement Industry"
+    {
+        "keyword": "Artificial Intelligence",
+        "is_processed": false
+    },
+    {
+        "keyword": "Cybersecurity",
+        "is_processed": false
+    },
+    {
+        "keyword": "Robotics",
+        "is_processed": false
+    },
+    {
+        "keyword": "Cloud Computing",
+        "is_processed": false
+    },
+    {
+        "keyword": "Quantum Computing",
+        "is_processed": false
+    },
+    {
+        "keyword": "Dalmia Cement",
+        "is_processed": false
+    },
+    {
+        "keyword": "Manufacturing",
+        "is_processed": false
+    },
+    {
+        "keyword": "Cement Industry",
+        "is_processed": false
+    },
+    {
+        "keyword": "India",
+        "is_processed": false
+    }
 ]

@@ -250,6 +250,7 @@ export default function ArticleCard({ article, onTogglePin }) {
             {article.keywords.map((kw, idx) => (
               <span 
                 key={idx}
+                className="article-tag"
                 style={{
                   fontSize: '0.7rem',
                   fontWeight: 600,
@@ -259,19 +260,17 @@ export default function ArticleCard({ article, onTogglePin }) {
                   color: 'var(--color-secondary)',
                   border: '1px solid rgba(226, 160, 43, 0.2)',
                   cursor: 'pointer',
-                  transition: 'all 0.2s ease'
+                  transition: 'all 0.2s ease',
+                  maxWidth: '150px',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  display: 'inline-block'
                 }}
+                title={kw}
                 onClick={(e) => {
                   e.stopPropagation();
                   window.dispatchEvent(new CustomEvent('search-keyword', { detail: kw }));
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = 'var(--color-secondary)';
-                  e.currentTarget.style.color = '#ffffff';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'rgba(226, 160, 43, 0.1)';
-                  e.currentTarget.style.color = 'var(--color-secondary)';
                 }}
               >
                 {kw}
@@ -311,114 +310,116 @@ export default function ArticleCard({ article, onTogglePin }) {
             {isIntelExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
 
-          {isIntelExpanded && (
-            <div style={{ padding: '0 1.25rem 1.25rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-              
-              {/* Sentiment & Innovation Score */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', fontWeight: 700 }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Sentiment:</span>
-                  <span 
-                    style={{
-                      padding: '0.15rem 0.6rem',
-                      borderRadius: '100px',
-                      textTransform: 'uppercase',
-                      fontSize: '0.65rem',
-                      letterSpacing: '0.03em',
-                      backgroundColor: 
-                        sentiment === 'Positive' ? 'rgba(34, 197, 94, 0.15)' :
-                        sentiment === 'Negative' ? 'rgba(239, 68, 68, 0.15)' :
-                        sentiment === 'Mixed' ? 'rgba(168, 85, 247, 0.15)' :
-                        'rgba(148, 163, 184, 0.15)',
-                      color:
-                        sentiment === 'Positive' ? '#22c55e' :
-                        sentiment === 'Negative' ? '#ef4444' :
-                        sentiment === 'Mixed' ? '#a855f7' :
-                        'var(--text-muted)',
-                      border: 
-                        sentiment === 'Positive' ? '1px solid rgba(34, 197, 94, 0.3)' :
-                        sentiment === 'Negative' ? '1px solid rgba(239, 68, 68, 0.3)' :
-                        sentiment === 'Mixed' ? '1px solid rgba(168, 85, 247, 0.3)' :
-                        '1px solid rgba(148, 163, 184, 0.3)'
-                    }}
-                  >
-                    {sentiment}
-                  </span>
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', fontWeight: 700, marginLeft: 'auto' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Innovation:</span>
-                  <span 
-                    style={{
-                      padding: '0.15rem 0.5rem',
-                      borderRadius: '4px',
-                      background: 'linear-gradient(135deg, #e2a02b 0%, #b45309 100%)',
-                      color: '#ffffff',
-                      fontSize: '0.7rem'
-                    }}
-                  >
-                    {innovation_score}/100
-                  </span>
-                </div>
-              </div>
-
-              {/* Categories */}
-              {industry_categories && industry_categories.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Categories:</span>
-                  {industry_categories.map((cat, idx) => (
+          <div style={{ display: 'grid', gridTemplateRows: isIntelExpanded ? '1fr' : '0fr', transition: 'grid-template-rows 0.3s ease-in-out' }}>
+            <div style={{ overflow: 'hidden' }}>
+              <div style={{ padding: '0 1.25rem 1.25rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                
+                {/* Sentiment & Innovation Score */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', fontWeight: 700 }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Sentiment:</span>
                     <span 
-                      key={idx}
                       style={{
+                        padding: '0.15rem 0.6rem',
+                        borderRadius: '100px',
+                        textTransform: 'uppercase',
                         fontSize: '0.65rem',
-                        fontWeight: 600,
-                        padding: '0.1rem 0.45rem',
-                        borderRadius: '4px',
-                        backgroundColor: 'var(--border-color)',
-                        color: 'var(--text-secondary)',
-                        border: '1px solid rgba(0,0,0,0.03)'
+                        letterSpacing: '0.03em',
+                        backgroundColor: 
+                          sentiment === 'Positive' ? 'rgba(34, 197, 94, 0.15)' :
+                          sentiment === 'Negative' ? 'rgba(239, 68, 68, 0.15)' :
+                          sentiment === 'Mixed' ? 'rgba(168, 85, 247, 0.15)' :
+                          'rgba(148, 163, 184, 0.15)',
+                        color:
+                          sentiment === 'Positive' ? '#22c55e' :
+                          sentiment === 'Negative' ? '#ef4444' :
+                          sentiment === 'Mixed' ? '#a855f7' :
+                          'var(--text-muted)',
+                        border: 
+                          sentiment === 'Positive' ? '1px solid rgba(34, 197, 94, 0.3)' :
+                          sentiment === 'Negative' ? '1px solid rgba(239, 68, 68, 0.3)' :
+                          sentiment === 'Mixed' ? '1px solid rgba(168, 85, 247, 0.3)' :
+                          '1px solid rgba(148, 163, 184, 0.3)'
                       }}
                     >
-                      {cat}
+                      {sentiment}
                     </span>
-                  ))}
-                </div>
-              )}
+                  </div>
 
-              {/* Executive Summary */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', borderLeft: '2px solid var(--color-secondary)', paddingLeft: '0.75rem' }}>
-                <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Executive Summary</span>
-                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
-                  {executive_summary}
-                </p>
-              </div>
-
-              {/* Implications */}
-              {business_implications && business_implications.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                  <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Business Implications</span>
-                  <ul style={{ paddingLeft: '1.1rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                    {business_implications.map((imp, idx) => (
-                      <li key={idx} style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-                        {imp}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* AI Tech */}
-              {ai_relevance && (
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.35rem', padding: '0.5rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(26, 58, 92, 0.03)', border: '1px solid var(--border-color)' }}>
-                  <Cpu size={14} style={{ color: brand ? brand.text : 'var(--color-primary)', marginTop: '2px', flexShrink: 0 }} />
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
-                    <strong style={{ color: 'var(--text-primary)' }}>AI Tech:</strong> {ai_relevance}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', fontWeight: 700, marginLeft: 'auto' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Innovation:</span>
+                    <span 
+                      style={{
+                        padding: '0.15rem 0.5rem',
+                        borderRadius: '4px',
+                        background: 'linear-gradient(135deg, #e2a02b 0%, #b45309 100%)',
+                        color: '#ffffff',
+                        fontSize: '0.7rem'
+                      }}
+                    >
+                      {innovation_score}/100
+                    </span>
                   </div>
                 </div>
-              )}
 
+                {/* Categories */}
+                {industry_categories && industry_categories.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 600 }}>Categories:</span>
+                    {industry_categories.map((cat, idx) => (
+                      <span 
+                        key={idx}
+                        style={{
+                          fontSize: '0.65rem',
+                          fontWeight: 600,
+                          padding: '0.1rem 0.45rem',
+                          borderRadius: '4px',
+                          backgroundColor: 'var(--border-color)',
+                          color: 'var(--text-secondary)',
+                          border: '1px solid rgba(0,0,0,0.03)'
+                        }}
+                      >
+                        {cat}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Executive Summary */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', borderLeft: '2px solid var(--color-secondary)', paddingLeft: '0.75rem' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Executive Summary</span>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+                    {executive_summary}
+                  </p>
+                </div>
+
+                {/* Implications */}
+                {business_implications && business_implications.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 800, color: 'var(--text-primary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Business Implications</span>
+                    <ul style={{ paddingLeft: '1.1rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      {business_implications.map((imp, idx) => (
+                        <li key={idx} style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                          {imp}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* AI Tech */}
+                {ai_relevance && (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.35rem', padding: '0.5rem 0.75rem', borderRadius: '6px', backgroundColor: 'rgba(26, 58, 92, 0.03)', border: '1px solid var(--border-color)' }}>
+                    <Cpu size={14} style={{ color: brand ? brand.text : 'var(--color-primary)', marginTop: '2px', flexShrink: 0 }} />
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                      <strong style={{ color: 'var(--text-primary)' }}>AI Tech:</strong> {ai_relevance}
+                    </div>
+                  </div>
+                )}
+
+              </div>
             </div>
-          )}
+          </div>
         </div>
       )}
 
@@ -452,22 +453,24 @@ export default function ArticleCard({ article, onTogglePin }) {
             {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
 
-          {isExpanded && (
-            <div 
-              style={{ 
-                padding: '0 1.25rem 1.25rem 1.25rem', 
-                fontSize: '0.8rem', 
-                color: 'var(--text-muted)', 
-                lineHeight: 1.5,
-                maxHeight: '180px',
-                overflowY: 'auto'
-              }}
-            >
-              <div style={{ fontStyle: 'italic', borderLeft: '2px solid var(--border-color)', paddingLeft: '0.75rem' }}>
-                "{scraped_content}"
+          <div style={{ display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr', transition: 'grid-template-rows 0.3s ease-in-out' }}>
+            <div style={{ overflow: 'hidden' }}>
+              <div 
+                style={{ 
+                  padding: '0 1.25rem 1.25rem 1.25rem', 
+                  fontSize: '0.8rem', 
+                  color: 'var(--text-muted)', 
+                  lineHeight: 1.5,
+                  maxHeight: '180px',
+                  overflowY: 'auto'
+                }}
+              >
+                <div style={{ fontStyle: 'italic', borderLeft: '2px solid var(--border-color)', paddingLeft: '0.75rem' }}>
+                  "{scraped_content}"
+                </div>
               </div>
             </div>
-          )}
+          </div>
         </div>
       )}
     </div>

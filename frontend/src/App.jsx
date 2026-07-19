@@ -8,6 +8,7 @@ import {
   addMonitoredKeyword,
   removeMonitoredKeyword,
   runPipelineInBackground,
+  runIncrementalPipeline,
   fetchPipelineStatus
 } from './api/newsApi';
 import KeywordAutocomplete from './components/KeywordAutocomplete';
@@ -29,6 +30,7 @@ import {
   Menu,
   Trash2,
   Play,
+  RefreshCw,
   LogOut,
   Sliders,
   CheckCircle2
@@ -56,6 +58,7 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [pinnedArticles, setPinnedArticles] = useState([]);
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [filterText, setFilterText] = useState('');
   const [activeView, setActiveView] = useState('feed'); // 'feed', 'search', 'admin'
   const [lastUpdated, setLastUpdated] = useState('');
   const [nextUpdate, setNextUpdate] = useState('');
@@ -177,7 +180,7 @@ export default function App() {
       setLastUpdated(data.last_updated || '');
       setNextUpdate(data.next_update || '');
     } catch (err) {
-      setError(err.message || 'Refresh request failed.');
+      setError('Refresh failed. Showing previous dataset. (' + (err.message || 'Unknown error') + ')');
     } finally {
       setIsRefreshing(false);
     }
@@ -298,6 +301,15 @@ export default function App() {
     }
   };
 
+  const handleTriggerIncrementalPipeline = async () => {
+    try {
+      const res = await runIncrementalPipeline();
+      setPipelineRunStatus(res.status);
+    } catch (err) {
+      setError(err.message || 'Failed to trigger incremental pipeline execution.');
+    }
+  };
+
   const renderAdminPanel = () => {
     return (
       <div className="admin-section animate-fade-in">
@@ -394,34 +406,78 @@ export default function App() {
               Scraping Pipeline Controls
             </h3>
             
-            <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Launch the news ingestion aggregator. It will scrape monitored websites, perform LLM reasoning, extract article details, generate 3 search tags via Gemini Flash, and update the cache.
+            <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '1.25rem' }}>
+              Manage news ingestion. Scraping processes websites, performs LLM reasoning, extracts article details, generates 3 search tags, and updates the cache.
             </p>
 
-            <button
-              onClick={handleTriggerPipeline}
-              disabled={pipelineRunStatus.status === 'running'}
-              style={{
-                background: 'var(--gradient-tech)',
-                color: '#ffffff',
-                border: 'none',
-                padding: '0.85rem 1.5rem',
-                borderRadius: '8px',
-                fontWeight: 600,
-                fontSize: '0.95rem',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '0.5rem',
-                width: '100%',
-                boxShadow: '0 4px 12px var(--glow-primary)',
-                opacity: pipelineRunStatus.status === 'running' ? 0.6 : 1,
-                cursor: pipelineRunStatus.status === 'running' ? 'not-allowed' : 'pointer'
-              }}
-            >
-              <Play size={16} />
-              {pipelineRunStatus.status === 'running' ? 'Aggregation Running...' : 'Trigger Scraping Pipeline'}
-            </button>
+            {/* Section A: Incremental Pipeline */}
+            <div style={{ marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>Run Pipeline for New Keywords Only</span>
+              <button
+                onClick={handleTriggerIncrementalPipeline}
+                disabled={pipelineRunStatus.status === 'running'}
+                style={{
+                  background: 'var(--gradient-tech)',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '0.65rem 1.25rem',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '0.9rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  width: 'fit-content',
+                  boxShadow: '0 4px 12px var(--glow-primary)',
+                  opacity: pipelineRunStatus.status === 'running' ? 0.6 : 1,
+                  cursor: pipelineRunStatus.status === 'running' ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <RefreshCw size={16} className={pipelineRunStatus.status === 'running' ? 'animate-spin' : ''} />
+                Run Incremental Pipeline
+              </button>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                Processes only newly added keywords that have not been scraped yet.
+              </span>
+            </div>
+
+            {/* Visual Divider */}
+            <div style={{ display: 'flex', alignItems: 'center', margin: '1.25rem 0', color: 'var(--text-muted)' }}>
+              <div style={{ flexGrow: 1, height: '1px', background: 'var(--border-color)' }}></div>
+              <span style={{ padding: '0 1rem', fontSize: '0.75rem', fontWeight: 600 }}>OR</span>
+              <div style={{ flexGrow: 1, height: '1px', background: 'var(--border-color)' }}></div>
+            </div>
+
+            {/* Section B: Full Pipeline */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>Run Full Pipeline</span>
+              <button
+                onClick={handleTriggerPipeline}
+                disabled={pipelineRunStatus.status === 'running'}
+                style={{
+                  background: 'var(--gradient-tech)',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '0.65rem 1.25rem',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '0.9rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  width: 'fit-content',
+                  boxShadow: '0 4px 12px var(--glow-primary)',
+                  opacity: pipelineRunStatus.status === 'running' ? 0.6 : 1,
+                  cursor: pipelineRunStatus.status === 'running' ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <Play size={16} />
+                Run Full Pipeline (All Keywords)
+              </button>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                Re-runs the entire pipeline for all monitored keywords. May take several minutes.
+              </span>
+            </div>
 
             {pipelineRunStatus.status === 'running' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '1rem' }}>
@@ -612,9 +668,11 @@ export default function App() {
         <KeywordAutocomplete 
           onSearch={handleSearch} 
           onClear={handleClear} 
+          onInputChange={setFilterText}
           isLoading={isLoading || isRefreshing} 
           chips={chips}
           setChips={setChips}
+          keywordCounts={keywordCounts}
         />
       </div>
 
@@ -638,7 +696,7 @@ export default function App() {
       )}
 
       {/* Split layout: Sidebar + Main feed */}
-      <div style={{ display: 'flex', gap: '2rem', width: '100%', alignItems: 'flex-start', position: 'relative' }}>
+      <div style={{ display: 'flex', gap: '2rem', width: '100%', alignItems: 'stretch', position: 'relative', flexGrow: 1, minHeight: 0, overflow: 'hidden' }}>
         
         <Sidebar 
           keywordCounts={keywordCounts}
@@ -649,7 +707,7 @@ export default function App() {
         />
 
         {/* Main Feed Content Area */}
-        <div style={{ flexGrow: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2.5rem' }}>
+        <div className="article-scroll-container" style={{ flexGrow: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2.5rem', overflowY: 'auto', height: '100%', paddingRight: '0.5rem' }}>
           
           {/* Navigation Tabs */}
           <div className="nav-tabs-container glass-panel animate-fade-in">
@@ -734,7 +792,15 @@ export default function App() {
               
               {/* Feed View */}
               {activeView === 'feed' && (() => {
-                const combinedFeed = [...pinnedArticles, ...normalFeed];
+                const unfilteredFeed = [...pinnedArticles, ...normalFeed];
+                const combinedFeed = filterText 
+                  ? unfilteredFeed.filter(a => 
+                      a.title?.toLowerCase().includes(filterText.toLowerCase()) || 
+                      a.summary?.toLowerCase().includes(filterText.toLowerCase()) || 
+                      a.company?.toLowerCase().includes(filterText.toLowerCase()) || 
+                      a.keywords?.some(k => k.toLowerCase().includes(filterText.toLowerCase()))
+                    )
+                  : unfilteredFeed;
                 const paginatedFeed = combinedFeed.slice(0, pinnedArticles.length + visibleFeedCount);
                 return (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
@@ -807,7 +873,15 @@ export default function App() {
 
               {/* Search View */}
               {activeView === 'search' && (() => {
-                const combinedSearch = [...pinnedArticles, ...searchResults];
+                const unfilteredSearch = [...pinnedArticles, ...searchResults];
+                const combinedSearch = filterText 
+                  ? unfilteredSearch.filter(a => 
+                      a.title?.toLowerCase().includes(filterText.toLowerCase()) || 
+                      a.summary?.toLowerCase().includes(filterText.toLowerCase()) || 
+                      a.company?.toLowerCase().includes(filterText.toLowerCase()) || 
+                      a.keywords?.some(k => k.toLowerCase().includes(filterText.toLowerCase()))
+                    )
+                  : unfilteredSearch;
                 const paginatedSearch = combinedSearch.slice(0, pinnedArticles.length + visibleSearchCount);
                 return (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
@@ -897,6 +971,29 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {isRefreshing && (
+        <div 
+          className="animate-fade-in glass-panel" 
+          style={{
+            position: 'fixed',
+            bottom: '2rem',
+            right: '2rem',
+            zIndex: 999,
+            padding: '0.75rem 1.25rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            background: 'var(--color-primary)',
+            color: 'white',
+            borderRadius: '100px',
+            boxShadow: '0 10px 25px rgba(0,0,0,0.2)'
+          }}
+        >
+          <RefreshCw size={16} className="animate-spin" />
+          <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Refreshing...</span>
+        </div>
+      )}
     </div>
   );
 }

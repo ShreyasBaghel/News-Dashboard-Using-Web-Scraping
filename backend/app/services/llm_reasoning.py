@@ -33,36 +33,102 @@ def get_article_cache_key(art: Dict[str, Any]) -> str:
     data = f"{url.strip()}||{title.strip()}||{pub.strip()}"
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
-def _get_article_tags(art: Dict[str, Any]) -> List[str]:
-    """Dynamically extract relevant tags/keywords matching the article using the pool keywords."""
+async def query_ollama_tags(title: str, summary: str, content: str, client: Optional[httpx.AsyncClient] = None) -> List[str]:
+    """
+    Queries local Ollama to generate 2 to 4 concise, domain-specific tags.
+    Prompt follows Phase 2 requirements strictly:
+    - Output 2 to 4 tags
+    - Max 2 words per tag
+    - Return ONLY raw JSON array: ["OpenAI", "GPT-5", "Reasoning"]
+    """
+    prompt = (
+        f"Generate 2 to 4 concise, high-value domain tags for the following news article.\n\n"
+        f"Article Title: {title}\n"
+        f"Article Summary: {summary}\n"
+        f"Article Content Snippet: {content[:800]}\n\n"
+        f"Requirements:\n"
+        f"- Output 2 to 4 tags.\n"
+        f"- Each tag must be 1 word, maximum 2 words.\n"
+        f"- Tags must be domain-specific, concise, and searchable.\n"
+        f"- Avoid filler, verbs, generic words, articles, or connectors.\n"
+        f"- Return ONLY a raw JSON array of strings. Example: [\"OpenAI\", \"GPT-5\", \"Reasoning\"]\n"
+        f"- No explanations, no markdown, no numbering, no additional text."
+    )
+    ollama_payload = {
+        "model": settings.OLLAMA_MODEL,
+        "prompt": prompt,
+        "format": "json",
+        "stream": False,
+        "options": {"temperature": 0.1}
+    }
+    timeout_cfg = httpx.Timeout(connect=3.0, read=settings.OLLAMA_TIMEOUT, write=3.0, pool=5.0)
     try:
-        from pool.keyword_extractor import get_cached_keywords
-        from app.pipeline import has_whole_word_match
-        
-        cached_kws = get_cached_keywords()
-        if not cached_kws:
-            return [art.get("keyword") or "Technology"]
-            
+        if client is not None:
+            response = await client.post(f"{settings.ollama_url_resolved}/api/generate", json=ollama_payload, timeout=timeout_cfg)
+        else:
+            async with httpx.AsyncClient(timeout=timeout_cfg) as local_client:
+                response = await local_client.post(f"{settings.ollama_url_resolved}/api/generate", json=ollama_payload, timeout=timeout_cfg)
+                
+        if response.status_code == 200:
+            res_data = response.json()
+            raw = res_data.get("response", "").strip()
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+            elif isinstance(parsed, dict) and "tags" in parsed and isinstance(parsed["tags"], list):
+                return [str(x) for x in parsed["tags"]]
+    except Exception as e:
+        logger.warning(f"Ollama tag generation call failed: {e}")
+    return []
+
+def _get_article_tags(art: Dict[str, Any]) -> List[str]:
+    """
+    Synchronous helper wrapper for tag extraction/retrieval.
+    Checks smart cache, cleans & validates tags using validate_and_clean_tags.
+    """
+    try:
+        url = art.get("url", "").strip()
         title = art.get("title", "")
         summary = art.get("summary", "")
         content = art.get("scraped_content", "") or ""
+        
+        from app.services.cache import get_smart_cached_tags, save_smart_cached_tags
+        from app.services.validator import validate_and_clean_tags
+
+        if url:
+            cached_tags = get_smart_cached_tags(url, title, summary)
+            if cached_tags:
+                return cached_tags
+
+        # Fallback keyword extraction using pool extracted keywords
+        from pool.keyword_extractor import get_cached_keywords
+        from app.pipeline import has_whole_word_match
+        
+        cached_kws = get_cached_keywords() or []
         text_to_check = f"{title} {summary} {content[:1000]}".lower()
         
-        matched_tags = []
-        # Check top 40 extracted keywords for relevance
+        raw_tags = []
         for kw in cached_kws[:40]:
             if has_whole_word_match(text_to_check, kw.lower()):
-                matched_tags.append(kw)
-                if len(matched_tags) >= 4:
+                raw_tags.append(kw)
+                if len(raw_tags) >= 4:
                     break
                     
-        if not matched_tags and art.get("keyword"):
-            matched_tags.append(art["keyword"].title())
+        if not raw_tags and art.get("keyword"):
+            raw_tags.append(art["keyword"])
             
-        return matched_tags if matched_tags else ["Industry"]
+        validated = validate_and_clean_tags(raw_tags, title=title, summary=summary, content=content)
+        if not validated:
+            validated = [art.get("keyword", "Technology").title()]
+
+        if url:
+            save_smart_cached_tags(url, validated, title=title, summary=summary)
+
+        return validated
     except Exception as e:
         logger.warning(f"Error generating tags: {e}")
         return [art.get("keyword") or "Technology"]
+
 
 def validate_llm_output(data: Any) -> bool:
     """Validate that the parsed JSON matches the expected schema and constraints."""

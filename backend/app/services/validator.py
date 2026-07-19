@@ -316,3 +316,140 @@ def validate_summary_quality(summary: str, title: str) -> bool:
         return False
         
     return True
+
+
+# --- PHASE 2: TAG VALIDATION ENGINE ---
+
+GENERIC_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+    "by", "from", "up", "about", "into", "over", "after", "is", "are", "was", "were",
+    "be", "been", "being", "have", "has", "had", "do", "does", "did", "can", "could",
+    "should", "would", "will", "this", "that", "these", "those", "news", "report",
+    "article", "update", "latest", "today", "using", "uses", "making", "new", "industry",
+    "general", "stuff", "thing", "things", "various", "overview", "analysis"
+}
+
+def normalize_text_for_matching(text: str) -> str:
+    """Strips non-alphanumeric characters, hyphens, spaces, and lowers casing for collision matching."""
+    if not text:
+        return ""
+    return re.sub(r'[^a-zA-Z0-9]', '', text.lower())
+
+def singularize_word(word: str) -> str:
+    """Rule-based singularization for English plurals (e.g., Tariffs -> Tariff, Technologies -> Technology)."""
+    w_lower = word.lower()
+    if w_lower.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    elif w_lower.endswith("es") and len(word) > 4 and w_lower[-3:] in ("ses", "xes", "zes", "ches", "shes"):
+        return word[:-2]
+    elif w_lower.endswith("s") and not w_lower.endswith("ss") and len(word) > 3:
+        return word[:-1]
+    return word
+
+def normalize_tag(tag: str) -> str:
+    """Normalizes whitespace and singularizes words in the tag while preserving mixed-case acronyms (e.g., OpenAI)."""
+    words = [w.strip() for w in tag.strip().split() if w.strip()]
+    singular_words = [singularize_word(w) for w in words]
+    result_words = []
+    for orig, sing in zip(words, singular_words):
+        if orig.isupper() and len(orig) <= 4:
+            result_words.append(orig)
+        elif any(c.isupper() for c in orig[1:]):
+            # Preserve mixed-case terms like OpenAI or ChatGPT
+            if len(orig) > len(sing) and orig.lower().startswith(sing.lower()):
+                result_words.append(orig[:len(sing)])
+            else:
+                result_words.append(orig)
+        elif orig.islower():
+            result_words.append(sing.title())
+        else:
+            result_words.append(sing)
+    return " ".join(result_words)
+
+
+def validate_and_clean_tags(
+    tags: List[str],
+    title: str = "",
+    summary: str = "",
+    content: str = "",
+    entity_list: Optional[List[str]] = None,
+    taxonomy: Optional[List[str]] = None
+) -> List[str]:
+    """
+    Validation engine for article tags:
+    - Maximum 2 words per tag.
+    - Rejects generic words, stop words, numbers-only, punctuation, duplicates.
+    - Normalizes casing, whitespace, and plurals (e.g., Tariffs -> Tariff).
+    - Performs normalized presence check against title, summary, content, entity_list, or taxonomy.
+    """
+    if not tags:
+        return []
+
+    full_text_norm = normalize_text_for_matching(f"{title} {summary} {content[:2000]}")
+    entities_norm = [normalize_text_for_matching(e) for e in (entity_list or [])]
+    taxonomy_norm = [normalize_text_for_matching(t) for t in (taxonomy or [])]
+
+    cleaned_tags: List[str] = []
+    seen_normalized: set = set()
+
+    for tag in tags:
+        if not tag or not isinstance(tag, str):
+            continue
+        
+        raw_tag = tag.strip()
+        # 1. Clean punctuation except hyphens and spaces
+        raw_tag = re.sub(r'[^\w\s\-]', '', raw_tag).strip()
+
+        if not raw_tag:
+            continue
+
+        words = raw_tag.split()
+        # 2. Maximum 2 words per tag
+        if len(words) > 2:
+            continue
+
+        # 3. Reject numbers-only or pure generic/stopwords
+        if all(w.isdigit() for w in words):
+            continue
+        if all(w.lower() in GENERIC_STOPWORDS for w in words):
+            continue
+
+        # 4. Normalize casing, whitespace, and plurals
+        norm_tag_str = normalize_tag(raw_tag)
+        tag_norm_key = normalize_text_for_matching(norm_tag_str)
+
+        if not tag_norm_key or len(tag_norm_key) < 2:
+            continue
+
+        # 5. Deduplicate
+        if tag_norm_key in seen_normalized:
+            continue
+
+        # 6. Normalized Presence Check
+        is_present = False
+        if not title and not summary and not content and entity_list is None and taxonomy is None:
+            is_present = True
+        else:
+            is_present = (
+                tag_norm_key in full_text_norm or
+                any(tag_norm_key in ent for ent in entities_norm if ent) or
+                any(tag_norm_key in tax for tax in taxonomy_norm if tax) or
+                any(ent in tag_norm_key for ent in entities_norm if len(ent) > 2) or
+                any(tax in tag_norm_key for tax in taxonomy_norm if len(tax) > 2)
+            )
+
+        if not is_present:
+            continue
+
+        seen_normalized.add(tag_norm_key)
+        cleaned_tags.append(norm_tag_str)
+        if len(cleaned_tags) >= 4:
+            break
+
+    return cleaned_tags
+
+def score_tag_quality(tag: str, title: str = "", content: str = "") -> bool:
+    """Deprecated quality scoring. Wraps validate_and_clean_tags for backward compatibility."""
+    cleaned = validate_and_clean_tags([tag], title=title, content=content)
+    return len(cleaned) > 0
+

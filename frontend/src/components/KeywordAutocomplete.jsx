@@ -5,28 +5,32 @@ const API_BASE_URL =
   (import.meta.env && (import.meta.env.VITE_API_URL || import.meta.env.REACT_APP_API_URL)) || 
   'http://localhost:8000/api';
 
-export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chips = [], setChips }) {
+export default function KeywordAutocomplete({ onSearch, onClear, onInputChange, isLoading, chips = [], setChips, keywordCounts = {} }) {
   const [inputValue, setInputValue] = useState('');
   const [allTags, setAllTags] = useState([]);
   const [showPopup, setShowPopup] = useState(false);
   const popupRef = useRef(null);
   const inputRef = useRef(null);
 
-  // Fetch all keywords for the grid on focus / startup
+  // Fetch or derive all keywords for the grid on focus / startup
   useEffect(() => {
-    const fetchAllTags = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/keywords/suggest?q=`);
-        if (response.ok) {
-          const data = await response.json();
-          setAllTags(data.suggestions || []);
+    if (keywordCounts && Object.keys(keywordCounts).length > 0) {
+      setAllTags(Object.keys(keywordCounts));
+    } else {
+      const fetchAllTags = async () => {
+        try {
+          const response = await fetch(`${API_BASE_URL}/keywords/suggest?q=`);
+          if (response.ok) {
+            const data = await response.json();
+            setAllTags(data.suggestions || []);
+          }
+        } catch (err) {
+          console.error('Error fetching keyword suggestions:', err);
         }
-      } catch (err) {
-        console.error('Error fetching keyword suggestions:', err);
-      }
-    };
-    fetchAllTags();
-  }, [chips]);
+      };
+      fetchAllTags();
+    }
+  }, [chips, keywordCounts]);
 
   // Handle click outside to close the searchable tag popup
   useEffect(() => {
@@ -46,6 +50,7 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
       onSearch(kw);
     }
     setInputValue('');
+    if (onInputChange) onInputChange('');
     setShowPopup(false);
   };
 
@@ -60,6 +65,7 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
   const handleClearAll = () => {
     setChips([]);
     setInputValue('');
+    if (onInputChange) onInputChange('');
     setShowPopup(false);
     onClear();
   };
@@ -147,6 +153,7 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
             value={inputValue}
             onChange={(e) => {
               setInputValue(e.target.value);
+              if (onInputChange) onInputChange(e.target.value);
               setShowPopup(true);
             }}
             onFocus={() => setShowPopup(true)}
@@ -215,7 +222,10 @@ export default function KeywordAutocomplete({ onSearch, onClear, isLoading, chip
             <input 
               type="text"
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => {
+                setInputValue(e.target.value);
+                if (onInputChange) onInputChange(e.target.value);
+              }}
               placeholder="Search keywords..."
               style={{
                 border: 'none',

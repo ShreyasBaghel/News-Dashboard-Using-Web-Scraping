@@ -7,6 +7,7 @@ export default function ArticleGrid({ children }) {
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
         gap: '1.5rem',
+        alignItems: 'start',
         width: '100%',
       }}
     >

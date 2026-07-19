@@ -254,6 +254,32 @@ export async function runPipelineInBackground() {
 }
 
 /**
+ * Manually trigger incremental pipeline execution (Admin only)
+ * @returns {Promise<object>} Execution status
+ */
+export async function runIncrementalPipeline() {
+  try {
+    const response = await fetch(`${API_BASE_URL}/admin/pipeline/run/incremental`, {
+      method: 'POST',
+      headers: { 
+        'Accept': 'application/json',
+        ...getAuthHeaders() 
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || 'Failed to trigger incremental pipeline run');
+    }
+    return await response.json();
+  } catch (err) {
+    if (err.name === 'TypeError' || err.message === 'Failed to fetch' || err.message.includes('fetch')) {
+      throw new Error("ConnectionError: Could not reach the backend");
+    }
+    throw err;
+  }
+}
+
+/**
  * Fetch current status of pipeline execution (Admin only)
  * @returns {Promise<object>} status
  */

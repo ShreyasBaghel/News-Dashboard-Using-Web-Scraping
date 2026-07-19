@@ -187,13 +187,22 @@ async def lifespan(app: FastAPI):
         load_keywords_cache()
         from app.services.cache import build_in_memory_index
         build_in_memory_index()
+        from app.services.cache import get_all_aggregated_keywords, get_global_keyword_counts
+        agg = get_all_aggregated_keywords()
+        kw_counts = get_global_keyword_counts()
+        logger.info(f"[STARTUP] Total unique keywords available: {len(agg)} from article_keywords table, {len(kw_counts)} from cache.json.")
     except Exception as e:
         logger.error(f"Failed to ensure fresh pool on startup: {str(e)}")
     
+    logger.info("Loading ACTIVE_DATASET snapshot from SQLite authoritative store...")
+    from app.services.dataset_manager import dataset_manager
+    dataset_manager.load_startup_snapshot()
+
     logger.info("Starting background scheduler...")
     start_scheduler()
     
     yield
+
     
     logger.info("Shutting down background scheduler...")
     shutdown_scheduler()
@@ -249,36 +258,62 @@ async def suggest_keywords(q: str = Query("", description="Prefix search term fo
 import datetime
 
 def get_news_from_cache_or_default(keyword: Optional[str]) -> dict:
-    from app.services.cache import search_cache_by_keyword, get_global_keyword_counts, get_cached_results
+    from app.services.dataset_manager import dataset_manager
+    from app.services.validator import normalize_text_for_matching
+    
+    active_dataset = dataset_manager.get_active_dataset()
     keyword_clean = keyword.strip() if keyword else ""
-    if keyword_clean:
-        matching = search_cache_by_keyword(keyword_clean)
-        global_kws = get_global_keyword_counts()
-        return {
-            "keyword": keyword_clean,
-            "articles": matching,
-            "pinned_articles": [],
-            "last_updated": datetime.datetime.utcnow().isoformat().replace("+00:00", "Z"),
-            "next_update": (datetime.datetime.utcnow() + datetime.timedelta(hours=settings.REFRESH_INTERVAL_HOURS)).isoformat().replace("+00:00", "Z"),
-            "keyword_counts": global_kws
-        }
-    else:
-        cached = get_cached_results("default_dashboard")
-        if cached:
-            cached["keyword_counts"] = get_global_keyword_counts()
-            return cached
+    
+    if not keyword_clean:
+        return active_dataset
         
-        # Fallback if SQLite cache is empty
-        matching = search_cache_by_keyword(None)
-        global_kws = get_global_keyword_counts()
-        return {
-            "keyword": "Default Dashboard",
-            "articles": matching,
-            "pinned_articles": [],
-            "last_updated": datetime.datetime.utcnow().isoformat().replace("+00:00", "Z"),
-            "next_update": (datetime.datetime.utcnow() + datetime.timedelta(hours=settings.REFRESH_INTERVAL_HOURS)).isoformat().replace("+00:00", "Z"),
-            "keyword_counts": global_kws
-        }
+    keyword_norm = normalize_text_for_matching(keyword_clean)
+    
+    matching_articles = []
+    for art in active_dataset.get("articles", []):
+        matched = False
+        # 1. Exact or Normalized Tag Match
+        tags = art.get("keywords", [])
+        for tag in tags:
+            if normalize_text_for_matching(tag) == keyword_norm:
+                matched = True
+                break
+                
+        # 2. Title / Summary Substring Match
+        if not matched:
+            title_norm = normalize_text_for_matching(art.get("title", ""))
+            summary_norm = normalize_text_for_matching(art.get("summary", ""))
+            if keyword_norm and (keyword_norm in title_norm or keyword_norm in summary_norm):
+                matched = True
+                
+        if matched:
+            matching_articles.append(art)
+            
+    matching_pinned = []
+    for art in active_dataset.get("pinned_articles", []):
+        matched = False
+        tags = art.get("keywords", [])
+        for tag in tags:
+            if normalize_text_for_matching(tag) == keyword_norm:
+                matched = True
+                break
+        if not matched:
+            title_norm = normalize_text_for_matching(art.get("title", ""))
+            summary_norm = normalize_text_for_matching(art.get("summary", ""))
+            if keyword_norm and (keyword_norm in title_norm or keyword_norm in summary_norm):
+                matched = True
+        if matched:
+            matching_pinned.append(art)
+            
+    return {
+        "keyword": keyword_clean,
+        "articles": matching_articles,
+        "pinned_articles": matching_pinned,
+        "last_updated": active_dataset.get("last_updated"),
+        "next_update": active_dataset.get("next_update"),
+        "keyword_counts": active_dataset.get("keyword_counts", {})
+    }
+
 
 @app.get("/api/news", response_model=DashboardPayload)
 async def get_news(keyword: str = Query(None, description="Search keyword or topic")):
@@ -413,6 +448,19 @@ async def run_pipeline_endpoint(
     background_tasks.add_task(run_pipeline_in_background, keyword=None)
     return {"message": "Pipeline run started in background.", "status": pipeline_status}
 
+@app.post("/api/admin/pipeline/run/incremental")
+async def run_incremental_pipeline_endpoint(
+    background_tasks: BackgroundTasks,
+    x_user_role: Optional[str] = Header(None)
+):
+    await verify_admin_role(x_user_role)
+    from app.pipeline import pipeline_status
+    if pipeline_status["status"] == "running":
+        return {"message": "Pipeline is already running.", "status": pipeline_status}
+        
+    background_tasks.add_task(run_incremental_pipeline_in_background)
+    return {"message": "Incremental pipeline started for new keywords.", "status": pipeline_status}
+
 @app.get("/api/admin/pipeline/status")
 async def get_pipeline_status_endpoint(x_user_role: Optional[str] = Header(None)):
     await verify_admin_role(x_user_role)
@@ -421,10 +469,55 @@ async def get_pipeline_status_endpoint(x_user_role: Optional[str] = Header(None)
 
 async def run_pipeline_in_background(keyword: Optional[str] = None):
     from app.pipeline import pipeline_status, run_pipeline
+    from app.services.monitored_keywords import mark_keyword_processed
     try:
         await run_pipeline(keyword=keyword, force_refresh=True)
+        if keyword:
+            mark_keyword_processed(keyword, True)
     except Exception as e:
         logger.error(f"Background pipeline execution failed: {e}")
+
+async def run_incremental_pipeline_in_background():
+    from app.pipeline import pipeline_status, run_pipeline
+    from app.services.monitored_keywords import load_monitored_keywords_detailed, mark_keyword_processed
+    from datetime import datetime, timezone
+    
+    pipeline_status["status"] = "running"
+    pipeline_status["started_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    pipeline_status["progress"] = 5
+    pipeline_status["message"] = "Starting incremental pipeline for new keywords..."
+    
+    try:
+        detailed_keywords = load_monitored_keywords_detailed()
+        unprocessed = [d["keyword"] for d in detailed_keywords if not d.get("is_processed", False)]
+        
+        if not unprocessed:
+            pipeline_status["status"] = "completed"
+            pipeline_status["progress"] = 100
+            pipeline_status["message"] = "No new keywords to process."
+            return
+            
+        total = len(unprocessed)
+        logger.info(f"Incremental pipeline starting for {total} unprocessed keywords: {unprocessed}")
+        
+        for idx, kw in enumerate(unprocessed):
+            pipeline_status["progress"] = int(5 + (idx / total) * 90)
+            pipeline_status["message"] = f"Processing keyword {idx+1}/{total}: '{kw}'..."
+            pipeline_status["current_keyword"] = kw
+            
+            logger.info(f"Incremental pipeline: Processing '{kw}' ({idx+1}/{total})")
+            await run_pipeline(keyword=kw, force_refresh=False)
+            mark_keyword_processed(kw, True)
+            
+        pipeline_status["status"] = "completed"
+        pipeline_status["progress"] = 100
+        pipeline_status["message"] = f"Successfully processed {total} new keywords."
+        logger.info("Incremental pipeline completed successfully.")
+        
+    except Exception as e:
+        logger.error(f"Incremental pipeline failed: {e}")
+        pipeline_status["status"] = "failed"
+        pipeline_status["message"] = f"Incremental pipeline failed: {str(e)}"
 
 if __name__ == "__main__":
     import uvicorn
