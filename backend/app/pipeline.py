@@ -378,7 +378,7 @@ async def run_pipeline(keyword: Optional[str] = None, force_refresh: bool = Fals
     pipeline_start_time = time.perf_counter()
     db_keyword = keyword.lower().strip() if keyword else "default_dashboard"
     
-    # 1. Check SQLite Cache
+    # 1. Check database Cache
     t_cache_start = time.perf_counter()
     if not force_refresh:
         cached = get_cached_results(db_keyword)
@@ -887,7 +887,7 @@ async def _run_pipeline_inner(keyword: Optional[str] = None, force_refresh: bool
     payload = staging.commit()
     
     assembly_duration = time.perf_counter() - t_assembly_start
-    logger.info(f"Response assembly and SQLite caching completed in {assembly_duration:.3f} seconds.")
+    logger.info(f"Response assembly and database caching completed in {assembly_duration:.3f} seconds.")
     
     pipeline_status["status"] = "completed"
     pipeline_status["progress"] = 100

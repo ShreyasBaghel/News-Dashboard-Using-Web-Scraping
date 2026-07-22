@@ -133,8 +133,11 @@ export default function App() {
   useEffect(() => {
     const handleSearchEvent = (e) => {
       const tag = e.detail;
-      setChips([tag]);
-      handleSearch(tag);
+      setChips(prev => {
+         const newChips = prev.includes(tag) ? prev : [...prev, tag];
+         handleSearch(newChips.join(','));
+         return newChips;
+      });
     };
     window.addEventListener('search-keyword', handleSearchEvent);
     return () => window.removeEventListener('search-keyword', handleSearchEvent);
@@ -219,11 +222,15 @@ export default function App() {
   };
 
   const handleSelectSidebarTag = (tag) => {
-    if (chips.length === 1 && chips[0] === tag) {
-      handleClear();
+    if (chips.includes(tag)) {
+      const newChips = chips.filter(c => c !== tag);
+      setChips(newChips);
+      if (newChips.length === 0) handleClear();
+      else handleSearch(newChips.join(','));
     } else {
-      setChips([tag]);
-      handleSearch(tag);
+      const newChips = [...chips, tag];
+      setChips(newChips);
+      handleSearch(newChips.join(','));
     }
   };
 
@@ -269,13 +276,6 @@ export default function App() {
       const res = await addMonitoredKeyword(kw);
       setMonitoredKeywords(res.keywords);
       setNewKeywordInput('');
-      setPipelineRunStatus({
-        status: 'running',
-        progress: 15,
-        current_keyword: kw,
-        started_at: new Date().toISOString(),
-        message: 'Spawning background scraping for new keyword...'
-      });
     } catch (err) {
       setError(err.message || 'Failed to add keyword.');
     } finally {

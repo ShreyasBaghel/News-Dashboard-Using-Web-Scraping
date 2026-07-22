@@ -11,7 +11,11 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
-    DATABASE_PATH: str = "backend.db"
+    MYSQL_HOST: str = "localhost"
+    MYSQL_PORT: int = 3306
+    MYSQL_DB: str = "ai_news_dashboard"
+    MYSQL_USER: str = "root"
+    MYSQL_PASSWORD: str = "shreyas"
     
     # API Keys from the plan
     GEMINI_API_KEY: str = ""
@@ -89,6 +93,11 @@ class Settings(BaseSettings):
     @property
     def ttl_days_resolved(self) -> int:
         return self.CACHE_TTL_DAYS or self.DE_DUP_DAYS
+
+    @property
+    def sqlalchemy_database_uri(self) -> str:
+        return f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DB}"
+
 
     # Pydantic settings config to load from .env
     model_config = SettingsConfigDict(

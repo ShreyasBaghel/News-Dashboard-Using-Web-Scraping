@@ -327,7 +327,7 @@ async def fetch_from_hackernews(phrase: str) -> List[Dict[str, Any]]:
 async def fetch_from_newsdata(phrase: str, page: int = 1) -> List[Dict[str, Any]]:
     """
     Fetch news from NewsData.io.
-    Implements persistent credit protection using SQLite.
+    Implements persistent credit protection using database.
     """
     key = settings.newsdata_key_resolved
     if not key:
@@ -360,7 +360,7 @@ async def fetch_from_newsdata(phrase: str, page: int = 1) -> List[Dict[str, Any]
         async with httpx.AsyncClient(timeout=timeout_cfg, follow_redirects=True) as client:
             response = await client.get(url, params=params)
             
-            # Increment request counter (save to persistent SQLite storage)
+            # Increment request counter (save to persistent database storage)
             increment_newsdata_usage(today_str)
             
             if response.status_code == 200:

@@ -46,8 +46,9 @@ export default function KeywordAutocomplete({ onSearch, onClear, onInputChange, 
   const handleSelectKeyword = (keyword) => {
     const kw = keyword.trim();
     if (kw) {
-      setChips([kw]);
-      onSearch(kw);
+      const newChips = chips.includes(kw) ? chips : [...chips, kw];
+      setChips(newChips);
+      onSearch(newChips.join(','));
     }
     setInputValue('');
     if (onInputChange) onInputChange('');
@@ -59,6 +60,8 @@ export default function KeywordAutocomplete({ onSearch, onClear, onInputChange, 
     setChips(updated);
     if (updated.length === 0) {
       onClear();
+    } else {
+      onSearch(updated.join(','));
     }
   };
 
@@ -157,6 +160,15 @@ export default function KeywordAutocomplete({ onSearch, onClear, onInputChange, 
               setShowPopup(true);
             }}
             onFocus={() => setShowPopup(true)}
+            onKeyDown={(e) => {
+              if (e.key === 'Backspace' && !inputValue && chips.length > 0) {
+                e.preventDefault();
+                handleRemoveChip(chips[chips.length - 1]);
+              } else if (e.key === 'Enter' && inputValue.trim()) {
+                e.preventDefault();
+                handleSelectKeyword(inputValue);
+              }
+            }}
             placeholder={chips.length === 0 ? "Click to search tags or type to filter..." : "Add search filters..."}
             disabled={isLoading}
             style={{

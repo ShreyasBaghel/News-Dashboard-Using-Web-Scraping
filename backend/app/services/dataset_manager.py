@@ -2,7 +2,6 @@ import logging
 import threading
 import traceback
 import datetime
-import sqlite3
 from typing import Dict, Any, List, Optional
 from app.config import settings
 
@@ -22,7 +21,7 @@ class DatasetManager:
     """
     Manages the global ACTIVE_DATASET in-memory snapshot.
     ACTIVE_DATASET is read-only during request serving and replaced atomically.
-    SQLite remains the single authoritative persistent store.
+    database remains the single authoritative persistent store.
     """
     def __init__(self):
         self._lock = threading.Lock()
@@ -41,10 +40,10 @@ class DatasetManager:
 
     def load_startup_snapshot(self):
         """
-        Populates ACTIVE_DATASET from SQLite database on startup.
+        Populates ACTIVE_DATASET from database database on startup.
         No live scraping is required to restore previous backend state.
         """
-        logger.info("[STARTUP] Loading ACTIVE_DATASET snapshot from SQLite authoritative store...")
+        logger.info("[STARTUP] Loading ACTIVE_DATASET snapshot from database authoritative store...")
         try:
             from app.services.cache import get_cached_results, search_cache_by_keyword, get_global_keyword_counts
             
@@ -53,10 +52,10 @@ class DatasetManager:
             if cached and isinstance(cached, dict) and cached.get("articles"):
                 cached["keyword_counts"] = get_global_keyword_counts()
                 self.replace_active_dataset(cached)
-                logger.info(f"[STARTUP] Successfully loaded snapshot from SQLite with {len(cached.get('articles', []))} articles.")
+                logger.info(f"[STARTUP] Successfully loaded snapshot from database with {len(cached.get('articles', []))} articles.")
                 return
 
-            # Fallback to loading all articles from SQLite search cache
+            # Fallback to loading all articles from database search cache
             matching = search_cache_by_keyword(None)
             global_kws = get_global_keyword_counts()
             now_str = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -71,9 +70,9 @@ class DatasetManager:
                 "keyword_counts": global_kws
             }
             self.replace_active_dataset(payload)
-            logger.info(f"[STARTUP] Loaded fallback snapshot from SQLite with {len(matching)} articles.")
+            logger.info(f"[STARTUP] Loaded fallback snapshot from database with {len(matching)} articles.")
         except Exception as e:
-            logger.error(f"[STARTUP] Failed to load startup snapshot from SQLite: {e}\n{traceback.format_exc()}")
+            logger.error(f"[STARTUP] Failed to load startup snapshot from database: {e}\n{traceback.format_exc()}")
             # Maintain default empty dataset state
             self.replace_active_dataset(DEFAULT_DATASET)
 
@@ -100,8 +99,8 @@ class StagingDataset:
         """
         Executes strict commit order:
         1. Validate staging dataset non-emptiness/schema
-        2. Begin SQLite transaction
-        3. Write dataset to SQLite
+        2. Begin database transaction
+        3. Write dataset to database
         4. Commit transaction
         5. Verify commit success
         6. Replace ACTIVE_DATASET atomically
@@ -113,7 +112,8 @@ class StagingDataset:
         if not isinstance(self.articles, list):
             raise ValueError("Staging dataset articles must be a list.")
 
-        from app.services.cache import save_cached_results, get_db_connection
+        from app.services.cache import save_cached_results
+        from app.database import get_db
         
         now_str = t0.isoformat().replace("+00:00", "Z")
         next_str = (t0 + datetime.timedelta(hours=settings.REFRESH_INTERVAL_HOURS)).isoformat().replace("+00:00", "Z")
@@ -127,26 +127,26 @@ class StagingDataset:
             "keyword_counts": self.keyword_counts
         }
 
-        # 2-5. SQLite Transaction & Persistence
-        logger.info("[STAGING COMMIT] Step 3: Beginning SQLite transaction...")
-        conn = get_db_connection()
+        # 2-5. Database Transaction & Persistence
+        logger.info("[STAGING COMMIT] Step 3: Beginning database transaction...")
+        from app.database import SessionLocal
+        db = SessionLocal()
         try:
-            conn.execute("BEGIN TRANSACTION;")
-            # Save payload to SQLite cached_pipeline_results
+            # Save payload to cached_pipeline_results
             cache_key = self.keyword if self.keyword and self.keyword != "Default Dashboard" else "default_dashboard"
-            save_cached_results(cache_key, payload, conn=conn)
+            save_cached_results(cache_key, payload, session=db)
             if cache_key != "default_dashboard":
-                save_cached_results("default_dashboard", payload, conn=conn)
+                save_cached_results("default_dashboard", payload, session=db)
 
-            conn.commit()
-            logger.info("[STAGING COMMIT] Step 5: SQLite transaction committed successfully.")
+            db.commit()
+            logger.info("[STAGING COMMIT] Step 5: Database transaction committed successfully.")
         except Exception as e:
-            conn.rollback()
-            conn.close()
-            logger.error(f"[STAGING COMMIT FAILED] SQLite transaction failed: {e}")
+            db.rollback()
+            logger.error(f"[STAGING COMMIT FAILED] Database transaction failed: {e}")
             raise e
         finally:
-            conn.close()
+            db.close()
+
 
         # 6. Verify success & 7. Replace ACTIVE_DATASET
         dataset_manager.replace_active_dataset(payload)

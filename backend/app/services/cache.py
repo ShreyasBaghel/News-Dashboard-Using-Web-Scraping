@@ -1,13 +1,13 @@
 # Cache Architecture Decision:
 # cache.json (seen_articles) is the canonical source of truth for all article metadata, including keywords.
-# SQLite article_keywords table acts as a backing store and quick lookup cache for individual article url tags.
+# MySQL article_keywords table acts as a backing store and quick lookup cache for individual article url tags.
 # When building the in-memory index or counting global keywords, if cache.json lacks keywords for a URL,
-# they are fetched from SQLite, merged into the in-memory cache, and written back to cache.json on next save.
+# they are fetched from MySQL, merged into the in-memory cache, and written back to cache.json on next save.
 
 import os
-import sqlite3
 import hashlib
 import json
+from app.database import SessionLocal, CachedPipelineResult, LLMCache, ArticleKeyword, NewsdataUsage, SeenArticleHash
 import logging
 import time
 from collections import OrderedDict
@@ -70,98 +70,24 @@ seen_url_misses: int = 0
 _in_memory_keyword_index: Dict[str, List[Dict[str, Any]]] = {}
 _all_cached_articles: List[Dict[str, Any]] = []
 
-def get_db_connection():
-    conn = sqlite3.connect(settings.DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    """Initialize database tables for article de-duplication and pipeline caching."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    # Table for storing compiled JSON payloads per search query/keyword
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS cached_pipeline_results (
-            keyword TEXT PRIMARY KEY,
-            payload TEXT NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table for storing LLM reasoning results per article
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS llm_cache (
-            cache_key TEXT PRIMARY KEY,
-            payload TEXT NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table for storing article-level keyword generation results
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS article_keywords (
-            url TEXT PRIMARY KEY,
-            keywords TEXT NOT NULL,
-            title TEXT,
-            summary TEXT,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Safe backward-compatible migrations for existing article_keywords tables
-    try:
-        cursor.execute("ALTER TABLE article_keywords ADD COLUMN title TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE article_keywords ADD COLUMN summary TEXT")
-    except sqlite3.OperationalError:
-        pass
-    
-    # Table for newsdata usage tracking (daily credit protection)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS newsdata_usage (
-            date TEXT PRIMARY KEY,
-            request_count INTEGER DEFAULT 0
-        )
-    """)
-    
-    # Table for Phase 4 deduplication
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS seen_article_hashes (
-            hash_value TEXT PRIMARY KEY,
-            hash_type TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    conn.commit()
-    conn.close()
-
 
 def get_newsdata_usage(date_str: str) -> int:
-    """Retrieve the number of NewsData.io requests made on a specific date."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT request_count FROM newsdata_usage WHERE date = ?", (date_str,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return row[0]
-    return 0
+    with SessionLocal() as db:
+        entry = db.query(NewsdataUsage).filter(NewsdataUsage.date == date_str).first()
+        if entry:
+            return entry.request_count
+        return 0
+
 
 def increment_newsdata_usage(date_str: str):
-    """Increment the NewsData.io daily request count in SQLite database."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO newsdata_usage (date, request_count)
-        VALUES (?, 1)
-        ON CONFLICT(date) DO UPDATE SET request_count = request_count + 1
-    """, (date_str,))
-    conn.commit()
-    conn.close()
+    with SessionLocal() as db:
+        entry = db.query(NewsdataUsage).filter(NewsdataUsage.date == date_str).first()
+        if entry:
+            entry.request_count += 1
+        else:
+            db.add(NewsdataUsage(date=date_str, request_count=1))
+        db.commit()
+
 
 def migrate_caches():
     """
@@ -263,56 +189,27 @@ def migrate_caches():
     logger.info("Cache schema migration check finished.")
 
 def get_cached_llm_insights(cache_key: str) -> Optional[Dict[str, Any]]:
-    """Retrieve cached LLM insights for a given key, validating TTL."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT payload, updated_at FROM llm_cache WHERE cache_key = ?",
-        (cache_key,)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    
-    if row:
-        payload_str = row['payload']
-        updated_at_str = row['updated_at']
-        try:
-            # Check TTL
-            updated_dt = datetime.strptime(updated_at_str, '%Y-%m-%d %H:%M:%S')
-            age_seconds = (datetime.utcnow() - updated_dt).total_seconds()
-            if age_seconds <= settings.LLM_CACHE_TTL:
-                return json.loads(payload_str)
-            else:
-                logger.info(f"LLM cache expired for key: {cache_key}")
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM llm_cache WHERE cache_key = ?", (cache_key,))
-                conn.commit()
-                conn.close()
-        except Exception as e:
-            logger.error(f"Error reading LLM cache TTL: {e}")
-            try:
-                return json.loads(payload_str)
-            except Exception:
-                pass
-    return None
+    if not settings.LLM_CACHE_ENABLED:
+        return None
+    with SessionLocal() as db:
+        entry = db.query(LLMCache).filter(LLMCache.cache_key == cache_key).first()
+        if entry:
+            return json.loads(entry.payload)
+        return None
+
 
 def save_cached_llm_insights(cache_key: str, payload: Dict[str, Any]):
-    """Save/update LLM insights in SQLite cache."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    payload_str = json.dumps(payload)
-    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-    
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO llm_cache (cache_key, payload, updated_at)
-        VALUES (?, ?, ?)
-        """,
-        (cache_key, payload_str, now_str)
-    )
-    conn.commit()
-    conn.close()
+    if not settings.LLM_CACHE_ENABLED:
+        return
+    with SessionLocal() as db:
+        existing = db.query(LLMCache).filter(LLMCache.cache_key == cache_key).first()
+        payload_str = json.dumps(payload)
+        if existing:
+            existing.payload = payload_str
+        else:
+            db.add(LLMCache(cache_key=cache_key, payload=payload_str))
+        db.commit()
+
 
 def is_stale_fallback_keywords(url: str, keywords: List[str]) -> bool:
     """
@@ -377,192 +274,94 @@ def is_stale_fallback_keywords(url: str, keywords: List[str]) -> bool:
     return False
 
 def get_cached_keywords_for_article(url: str) -> Optional[List[str]]:
-    """Retrieve cached keywords for a given article URL, checking for stale values."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT keywords FROM article_keywords WHERE url = ?",
-        (url.strip(),)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        try:
-            keywords = json.loads(row[0])
-            if is_stale_fallback_keywords(url, keywords):
-                logger.info(f"Detected stale fallback/placeholder keywords {keywords} for {url}. Invalidating and deleting cache entry.")
-                try:
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM article_keywords WHERE url = ?", (url.strip(),))
-                    conn.commit()
-                    conn.close()
-                except Exception as db_err:
-                    logger.error(f"Failed to delete invalidated stale keywords from database: {db_err}")
-                return None
-            return keywords
-        except Exception as e:
-            logger.error(f"Error parsing cached keywords for {url}: {e}")
-    return None
+    with SessionLocal() as db:
+        entry = db.query(ArticleKeyword).filter(ArticleKeyword.url == url.strip()).first()
+        if entry:
+            return json.loads(entry.keywords)
+        return None
+
 
 def save_cached_keywords_for_article(url: str, keywords: List[str]):
-    """Save keywords for a given article URL to SQLite database."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    keywords_json = json.dumps(keywords)
-    cursor.execute(
-        "INSERT OR REPLACE INTO article_keywords (url, keywords) VALUES (?, ?)",
-        (url.strip(), keywords_json)
-    )
-    conn.commit()
-    conn.close()
+    save_keywords_for_article(url, keywords)
+
 
 def get_smart_cached_tags(url: str, current_title: str, current_summary: str) -> Optional[List[str]]:
-    """
-    Checks if valid cached tags exist in SQLite article_keywords for URL,
-    and verifies that title and summary match the cached record.
-    If valid and unchanged, returns the validated cached tags.
-    """
-    if not url:
-        return None
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT keywords, title, summary, updated_at FROM article_keywords WHERE url = ?", (url.strip(),))
-        row = cursor.fetchone()
-        if not row:
+    with SessionLocal() as db:
+        entry = db.query(ArticleKeyword).filter(ArticleKeyword.url == url.strip()).first()
+        if not entry:
             return None
         
-        cached_keywords_raw = row['keywords']
-        cached_title = row['title'] if 'title' in row.keys() and row['title'] is not None else None
-        cached_summary = row['summary'] if 'summary' in row.keys() and row['summary'] is not None else None
+        cached_title = entry.title or ""
+        cached_summary = entry.summary or ""
         
-        # Check if title or summary changed
-        if cached_title is not None and current_title and cached_title.strip() != current_title.strip():
-            logger.info(f"[SMART TAG CACHE] Title changed for {url}. Invalidating cached tags.")
+        if not are_titles_similar(current_title, cached_title):
+            logger.info(f"Smart cache miss (title mismatch) for {url}")
             return None
             
-        if cached_summary is not None and current_summary and cached_summary.strip() != current_summary.strip():
-            logger.info(f"[SMART TAG CACHE] Summary changed for {url}. Invalidating cached tags.")
-            return None
-
-        keywords = json.loads(cached_keywords_raw)
-        if not keywords or not isinstance(keywords, list):
+        current_summary_hash = get_content_hash(current_summary)
+        cached_summary_hash = get_content_hash(cached_summary)
+        
+        if current_summary_hash != cached_summary_hash:
+            logger.info(f"Smart cache miss (summary mismatch) for {url}")
             return None
             
-        from app.services.validator import validate_and_clean_tags
-        cleaned = validate_and_clean_tags(keywords, title=current_title, summary=current_summary)
-        if not cleaned:
-            logger.info(f"[SMART TAG CACHE] Cached tags {keywords} failed validation for {url}. Invalidating.")
-            return None
+        return json.loads(entry.keywords)
 
-        return cleaned
-    except Exception as e:
-        logger.warning(f"[SMART TAG CACHE] Error reading smart cache for {url}: {e}")
-        return None
-    finally:
-        conn.close()
 
 def save_smart_cached_tags(url: str, keywords: List[str], title: str = "", summary: str = ""):
-    """Saves validated tags, title, and summary to SQLite article_keywords."""
-    if not url:
-        return
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    keywords_json = json.dumps(keywords)
-    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute(
-        """
-        INSERT INTO article_keywords (url, keywords, title, summary, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(url) DO UPDATE SET
-            keywords = excluded.keywords,
-            title = excluded.title,
-            summary = excluded.summary,
-            updated_at = excluded.updated_at
-        """,
-        (url.strip(), keywords_json, title.strip(), summary.strip(), now_str)
-    )
-    conn.commit()
-    conn.close()
+    save_keywords_for_article(url, keywords, title, summary)
 
 
 def cleanup_stale_keywords_in_cache():
-    """
-    Scans the SQLite database and cache.json for stale placeholders or title-split fallback keywords,
-    deletes them from both caches, and saves the cache.json to disk.
-    """
-    logger.info("Initializing cache validation and database cleanup...")
-    
-    # 1. Clean seen articles cache (cache.json)
-    data = _load_seen_articles()
-    cleaned_urls = []
-    
-    for url_hash, entry in data.items():
-        if not isinstance(entry, dict):
-            continue
-        url = entry.get("url")
-        keywords = entry.get("keywords")
-        if not url:
-            continue
-            
-        if keywords and is_stale_fallback_keywords(url, keywords):
-            entry["keywords"] = []  # Clear stale keywords
-            cleaned_urls.append(url)
-            
-    if cleaned_urls:
-        global _seen_urls_dirty
-        _seen_urls_dirty = True
+    try:
+        articles_data = _load_seen_articles()
+        cleaned_urls = []
+        for url_hash, entry in articles_data.items():
+            if isinstance(entry, dict) and "keywords" in entry:
+                url = entry.get("url", "")
+                if is_stale_fallback_keywords(url, entry["keywords"]):
+                    entry["keywords"] = []
+                    cleaned_urls.append(url)
         save_seen_articles_to_disk()
         logger.info(f"Cleaned stale keywords for {len(cleaned_urls)} articles in cache.json.")
-        
-    # 2. Clean SQLite article_keywords table
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT url, keywords FROM article_keywords")
-        rows = cursor.fetchall()
-        
-        urls_to_delete = []
-        for r in rows:
-            db_url = r[0]
-            try:
-                kws = json.loads(r[1])
-                if is_stale_fallback_keywords(db_url, kws):
-                    urls_to_delete.append(db_url)
-            except Exception:
-                urls_to_delete.append(db_url)  # Invalidate malformed entries
-                
-        if urls_to_delete:
-            cursor.executemany("DELETE FROM article_keywords WHERE url = ?", [(u,) for u in urls_to_delete])
-            conn.commit()
-            logger.info(f"Successfully pruned {len(urls_to_delete)} stale/placeholder entries from SQLite article_keywords table.")
-        else:
-            logger.info("No stale fallback/placeholder keywords found in SQLite article_keywords table.")
-            
-        conn.close()
     except Exception as e:
-        logger.error(f"Error during SQLite keywords cache pruning: {e}")
+        logger.error(f"Error during cache.json stale keywords cleanup: {e}")
+    try:
+        with SessionLocal() as db:
+            rows = db.query(ArticleKeyword).all()
+            urls_to_delete = []
+            for r in rows:
+                try:
+                    kws = json.loads(r.keywords)
+                    if is_stale_fallback_keywords(r.url, kws):
+                        urls_to_delete.append(r.url)
+                except Exception:
+                    urls_to_delete.append(r.url)
+            
+            if urls_to_delete:
+                db.query(ArticleKeyword).filter(ArticleKeyword.url.in_(urls_to_delete)).delete(synchronize_session=False)
+                db.commit()
+                logger.info(f"Successfully pruned {len(urls_to_delete)} stale/placeholder entries from database.")
+            else:
+                logger.info("No stale fallback/placeholder keywords found in database.")
+    except Exception as e:
+        logger.error(f"Error during database keywords cache pruning: {e}")
+
 
 def get_all_aggregated_keywords() -> List[str]:
-    """Retrieve all unique keywords from the article_keywords cache table."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT keywords FROM article_keywords")
-    rows = cursor.fetchall()
-    conn.close()
-    
-    unique_kws = set()
-    for row in rows:
-        try:
-            kws = json.loads(row[0])
-            for kw in kws:
-                cleaned = kw.strip()
-                if cleaned:
-                    unique_kws.add(cleaned)
-        except Exception:
-            pass
-    return sorted(list(unique_kws))
+    with SessionLocal() as db:
+        rows = db.query(ArticleKeyword).all()
+        all_kws = set()
+        for r in rows:
+            try:
+                kws = json.loads(r.keywords)
+                for k in kws:
+                    if k.strip():
+                        all_kws.add(k.strip())
+            except Exception:
+                pass
+        return sorted(list(all_kws))
+
 
 def _get_url_hash(url: str) -> str:
     """Generate a SHA-256 hash for a given URL to use as index."""
@@ -711,40 +510,29 @@ def prune_old_urls():
         _save_seen_articles(updated_data)
 
 def get_cached_results(keyword: str) -> Optional[Dict[str, Any]]:
-    """Retrieve the cached JSON dashboard payload for a specific keyword."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT payload FROM cached_pipeline_results WHERE keyword = ?",
-        (keyword.lower().strip(),)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    
-    if row:
-        return json.loads(row['payload'])
-    return None
+    with SessionLocal() as db:
+        entry = db.query(CachedPipelineResult).filter(CachedPipelineResult.keyword == keyword).first()
+        if entry:
+            return json.loads(entry.payload)
+        return None
 
-def save_cached_results(keyword: str, payload: Dict[str, Any], conn: Optional[sqlite3.Connection] = None):
-    """Save/update the JSON dashboard payload for a specific keyword."""
-    should_close = False
-    if conn is None:
-        conn = get_db_connection()
-        should_close = True
-    cursor = conn.cursor()
+
+def save_cached_results(keyword: str, payload: Dict[str, Any], session=None):
     payload_str = json.dumps(payload)
-    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-    
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO cached_pipeline_results (keyword, payload, updated_at)
-        VALUES (?, ?, ?)
-        """,
-        (keyword.lower().strip(), payload_str, now_str)
-    )
-    if should_close:
-        conn.commit()
-        conn.close()
+    if session:
+        existing = session.query(CachedPipelineResult).filter(CachedPipelineResult.keyword == keyword).first()
+        if existing:
+            existing.payload = payload_str
+        else:
+            session.add(CachedPipelineResult(keyword=keyword, payload=payload_str))
+    else:
+        with SessionLocal() as db:
+            existing = db.query(CachedPipelineResult).filter(CachedPipelineResult.keyword == keyword).first()
+            if existing:
+                existing.payload = payload_str
+            else:
+                db.add(CachedPipelineResult(keyword=keyword, payload=payload_str))
+            db.commit()
 
 
 def load_cache() -> Dict[str, Any]:
@@ -835,42 +623,33 @@ def get_hash(content: str) -> str:
         return ""
     return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
-def is_hash_seen(hash_val: str, hash_type: str) -> bool:
-    """Check if a hash has been seen in SQLite store."""
-    if not hash_val:
-        return False
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM seen_article_hashes WHERE hash_value = ? AND hash_type = ?", (hash_val, hash_type))
-    row = cursor.fetchone()
-    conn.close()
-    return bool(row)
+def is_hash_seen(url_hash: str) -> bool:
+    with SessionLocal() as db:
+        return db.query(SeenArticleHash).filter(SeenArticleHash.url_hash == url_hash).first() is not None
 
-def mark_hash_seen(hash_val: str, hash_type: str):
-    """Mark a hash as seen in SQLite store."""
-    if not hash_val:
-        return
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute(
-        "INSERT OR IGNORE INTO seen_article_hashes (hash_value, hash_type, created_at) VALUES (?, ?, ?)",
-        (hash_val, hash_type, now_str)
-    )
-    conn.commit()
-    conn.close()
+
+def mark_hash_seen(url_hash: str):
+    with SessionLocal() as db:
+        existing = db.query(SeenArticleHash).filter(SeenArticleHash.url_hash == url_hash).first()
+        if not existing:
+            db.add(SeenArticleHash(url_hash=url_hash))
+            try:
+                db.commit()
+            except Exception as e:
+                logger.warning(f"Failed to mark hash seen (maybe a race condition): {e}")
+                db.rollback()
+
 
 def cleanup_expired_hashes():
-    """Remove hashes older than 3 days (Phase 4 requirement)."""
+    from datetime import datetime, timedelta
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(days=3)).strftime('%Y-%m-%d %H:%M:%S')
-        cursor.execute("DELETE FROM seen_article_hashes WHERE created_at < ?", (cutoff,))
-        conn.commit()
-        conn.close()
+        with SessionLocal() as db:
+            cutoff = datetime.utcnow() - timedelta(days=3)
+            db.query(SeenArticleHash).filter(SeenArticleHash.created_at < cutoff).delete(synchronize_session=False)
+            db.commit()
     except Exception as e:
         logger.error(f"Error cleaning up expired hashes: {e}")
+
 
 def are_titles_similar(t1: str, t2: str) -> bool:
     s1 = re.sub(r'\W+', '', t1.lower())
@@ -1016,17 +795,15 @@ def build_in_memory_index():
         articles.sort(key=lambda x: x.get("published_at") or x.get("added_at") or "", reverse=True)
         _all_cached_articles = articles
         
-        # Second pass: query all (url, keywords) rows from article_keywords in SQLite
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT url, keywords FROM article_keywords")
-        sqlite_lookup = {}
-        for r in cursor.fetchall():
-            try:
-                sqlite_lookup[r[0]] = json.loads(r[1])
-            except Exception:
-                pass
-        conn.close()
+        # Second pass: query all (url, keywords) rows from article_keywords in database
+        with SessionLocal() as db:
+            rows = db.query(ArticleKeyword).all()
+            db_lookup = {}
+            for r in rows:
+                try:
+                    db_lookup[r.url] = json.loads(r.keywords)
+                except Exception:
+                    pass
         
         merged_any = False
         for art in _all_cached_articles:
@@ -1034,12 +811,12 @@ def build_in_memory_index():
             if url:
                 keywords = art.get("keywords")
                 if not keywords: # empty or missing
-                    sqlite_kws = sqlite_lookup.get(url)
-                    if sqlite_kws:
-                        art["keywords"] = sqlite_kws
+                    db_kws = db_lookup.get(url)
+                    if db_kws:
+                        art["keywords"] = db_kws
                         url_hash = _get_url_hash(url)
                         if url_hash in articles_data:
-                            articles_data[url_hash]["keywords"] = sqlite_kws
+                            articles_data[url_hash]["keywords"] = db_kws
                         _seen_urls_dirty = True
                         merged_any = True
                         
@@ -1065,29 +842,27 @@ def build_in_memory_index():
         logger.error(f"Failed to build in-memory keyword index: {e}")
 
 def get_global_keyword_counts() -> Dict[str, int]:
-    """Aggregate keywords from all articles in cache.json and merge with SQLite."""
+    """Aggregate keywords from all articles in cache.json and merge with MySQL."""
     counts = {}
     try:
         articles_data = _load_seen_articles()
         
-        # Fetch keywords from SQLite as a lookup
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT url, keywords FROM article_keywords")
-        sqlite_lookup = {}
-        for r in cursor.fetchall():
-            try:
-                sqlite_lookup[r[0]] = json.loads(r[1])
-            except Exception:
-                pass
-        conn.close()
+        # Fetch keywords from database as a lookup
+        with SessionLocal() as db:
+            rows = db.query(ArticleKeyword).all()
+            db_lookup = {}
+            for r in rows:
+                try:
+                    db_lookup[r.url] = json.loads(r.keywords)
+                except Exception:
+                    pass
         
         for entry in articles_data.values():
             if isinstance(entry, dict) and "title" in entry:
                 kws = entry.get("keywords") or []
                 url = entry.get("url")
-                if not kws and url in sqlite_lookup:
-                    kws = sqlite_lookup[url]
+                if not kws and url in db_lookup:
+                    kws = db_lookup[url]
                 for kw in kws:
                     kw_clean = kw.strip()
                     if kw_clean:

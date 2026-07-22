@@ -6,7 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.config import settings
-from app.services.cache import init_db, is_duplicate_of_any
+from app.services.cache import is_duplicate_of_any
+from app.database import init_db
 from app.scheduler import start_scheduler, shutdown_scheduler
 from app.pipeline import run_pipeline
 from app.models import DashboardPayload, RefreshRequest, Article
@@ -194,7 +195,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to ensure fresh pool on startup: {str(e)}")
     
-    logger.info("Loading ACTIVE_DATASET snapshot from SQLite authoritative store...")
+    logger.info("Loading ACTIVE_DATASET snapshot from database authoritative store...")
     from app.services.dataset_manager import dataset_manager
     dataset_manager.load_startup_snapshot()
 
@@ -267,24 +268,21 @@ def get_news_from_cache_or_default(keyword: Optional[str]) -> dict:
     if not keyword_clean:
         return active_dataset
         
-    keyword_norm = normalize_text_for_matching(keyword_clean)
+    # Split by comma for multi-keyword search
+    keywords_list = [k.strip() for k in keyword_clean.split(',') if k.strip()]
+    keywords_norm = [normalize_text_for_matching(k) for k in keywords_list]
     
     matching_articles = []
     for art in active_dataset.get("articles", []):
         matched = False
-        # 1. Exact or Normalized Tag Match
-        tags = art.get("keywords", [])
-        for tag in tags:
-            if normalize_text_for_matching(tag) == keyword_norm:
+        title_norm = normalize_text_for_matching(art.get("title", ""))
+        summary_norm = normalize_text_for_matching(art.get("summary", ""))
+        tags_norm = [normalize_text_for_matching(tag) for tag in art.get("keywords", [])]
+        
+        for kw_norm in keywords_norm:
+            if kw_norm in tags_norm or (kw_norm and (kw_norm in title_norm or kw_norm in summary_norm)):
                 matched = True
                 break
-                
-        # 2. Title / Summary Substring Match
-        if not matched:
-            title_norm = normalize_text_for_matching(art.get("title", ""))
-            summary_norm = normalize_text_for_matching(art.get("summary", ""))
-            if keyword_norm and (keyword_norm in title_norm or keyword_norm in summary_norm):
-                matched = True
                 
         if matched:
             matching_articles.append(art)
@@ -292,16 +290,15 @@ def get_news_from_cache_or_default(keyword: Optional[str]) -> dict:
     matching_pinned = []
     for art in active_dataset.get("pinned_articles", []):
         matched = False
-        tags = art.get("keywords", [])
-        for tag in tags:
-            if normalize_text_for_matching(tag) == keyword_norm:
+        title_norm = normalize_text_for_matching(art.get("title", ""))
+        summary_norm = normalize_text_for_matching(art.get("summary", ""))
+        tags_norm = [normalize_text_for_matching(tag) for tag in art.get("keywords", [])]
+        
+        for kw_norm in keywords_norm:
+            if kw_norm in tags_norm or (kw_norm and (kw_norm in title_norm or kw_norm in summary_norm)):
                 matched = True
                 break
-        if not matched:
-            title_norm = normalize_text_for_matching(art.get("title", ""))
-            summary_norm = normalize_text_for_matching(art.get("summary", ""))
-            if keyword_norm and (keyword_norm in title_norm or keyword_norm in summary_norm):
-                matched = True
+                
         if matched:
             matching_pinned.append(art)
             
@@ -409,11 +406,8 @@ async def add_monitored_keyword_endpoint(
     keywords.append(keyword_to_add)
     save_monitored_keywords(keywords)
     
-    # Spawn pipeline run specifically for the new keyword in the background
-    background_tasks.add_task(run_pipeline_in_background, keyword=keyword_to_add)
-    
     return {
-        "message": f"Keyword '{keyword_to_add}' added successfully. Scraping pipeline started.",
+        "message": f"Keyword '{keyword_to_add}' added successfully. It is now pending and will be scraped when the Incremental Pipeline runs.",
         "keywords": keywords
     }
 

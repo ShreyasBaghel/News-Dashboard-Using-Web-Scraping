@@ -51,7 +51,7 @@ end_logic_old = '''    payload = {
         "keyword_counts": keyword_counts
     }
     
-    # 8. Save in SQLite cache
+    # 8. Save in database cache
     save_cached_results(db_keyword, payload)'''
 
 end_logic_new = '''    from app.services.dataset_manager import StagingDataset

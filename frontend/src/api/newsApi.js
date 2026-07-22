@@ -48,7 +48,7 @@ export async function fetchDashboardData(keyword = '') {
 }
 
 /**
- * Force manual pipeline execution, bypassing SQLite cache (Admin only)
+ * Force manual pipeline execution, bypassing database cache (Admin only)
  * @param {string} [keyword] Optional keyword search term to refresh
  * @returns {Promise<object>} Refreshed dashboard payload object
  */

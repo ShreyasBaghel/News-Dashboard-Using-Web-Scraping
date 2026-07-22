@@ -11,7 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from app.services.cache import init_db
+from app.database import init_db
 from app.pipeline import run_pipeline
 
 logging.basicConfig(
@@ -31,7 +31,7 @@ async def main():
     parser.add_argument(
         "--force", 
         action="store_true", 
-        help="Force run pipeline, bypassing SQLite cache."
+        help="Force run pipeline, bypassing database cache."
     )
     args = parser.parse_args()
 
