@@ -228,28 +228,6 @@ export default function KeywordAutocomplete({ onSearch, onClear, onInputChange, 
             zIndex: 9999,
           }}
         >
-          {/* Inner Search Box */}
-          <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem', marginBottom: '1rem' }}>
-            <Search size={16} style={{ color: 'var(--text-muted)', marginRight: '0.5rem' }} />
-            <input 
-              type="text"
-              value={inputValue}
-              onChange={(e) => {
-                setInputValue(e.target.value);
-                if (onInputChange) onInputChange(e.target.value);
-              }}
-              placeholder="Search keywords..."
-              style={{
-                border: 'none',
-                background: 'none',
-                outline: 'none',
-                width: '100%',
-                color: 'var(--text-primary)',
-                fontSize: '0.95rem'
-              }}
-            />
-          </div>
-
           {/* 3-Column CSS Grid list */}
           {filteredTags.length > 0 ? (
             <div className="tags-grid">

@@ -740,10 +740,7 @@ export default function App() {
           {/* Refresh Scheduler Status */}
           {nextUpdate && activeView !== 'admin' && (
             <RefreshTimer 
-              nextUpdate={nextUpdate} 
-              onManualRefresh={handleForceRefresh} 
-              isLoading={isRefreshing} 
-              userRole={userRole}
+              nextUpdate={nextUpdate}
             />
           )}
 
